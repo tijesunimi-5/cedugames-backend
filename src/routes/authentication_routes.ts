@@ -9,7 +9,7 @@ import {
   RegisterUserSchema,
 } from "../schemas/authentication_schema";
 import { success } from "zod";
-import { comparePassword } from "../helpers/hashPassword";
+import { comparePassword, hashPassword } from "../helpers/hashPassword";
 
 const router = Router();
 
@@ -30,8 +30,7 @@ router.post("/user/register", async (req, res) => {
     }
 
     const { name, username, email, password, age } = validation.data;
-    const saltRound = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRound);
+    const hashedPassword = await hashPassword(password);
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
 
     const insertQuery = `
