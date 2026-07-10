@@ -30,6 +30,25 @@ router.post("/user/register", async (req, res) => {
     }
 
     const { name, username, email, password, age } = validation.data;
+    const checkUserQuery = `
+      SELECT email, username FROM users WHERE email = $1 OR username = $2;
+    `;
+    const checkResult = await pool.query(checkUserQuery, [email, username]);
+
+    if (checkResult.rows.length > 0) {
+      const existingUser = checkResult.rows[0];
+      
+      const message = existingUser.email === email 
+        ? "An account with this email already exists." 
+        : "This username is already taken.";
+
+      res.status(400).json({
+        success: false,
+        message
+      });
+      return
+    }
+    
     const hashedPassword = await hashPassword(password);
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
 
