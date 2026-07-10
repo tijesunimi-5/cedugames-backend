@@ -2,3 +2,14 @@
 - Initialized backend
 - Added Express server
 - Configured Typescript
+
+##  July 10
+### Added
+- Express, TypeScript, and basic application layer configurations.
+- Dynamic PostgreSQL connection pool setup supporting local pgAdmin and remote serverless Neon instances.
+- Standard player registration endpoints featuring async database query handling. [/auth/user/register]
+- Input security layers enforced via Zod schema parsers.
+- Centralized `handleGlobalErrors` catch middleware.
+- Added the login endpoint [/auth/login]
+- Added helper functions to help hash password and compare them
+- Added the login schema

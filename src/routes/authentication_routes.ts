@@ -4,9 +4,12 @@ import pool from "../config/database_connection";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import {
+  LoginSchema,
   RegisterUserInput,
   RegisterUserSchema,
 } from "../schemas/authentication_schema";
+import { success } from "zod";
+import { comparePassword } from "../helpers/hashPassword";
 
 const router = Router();
 
@@ -80,6 +83,84 @@ router.post("/user/register", async (req, res) => {
       success: false,
       message: "An error occurred while registering the user.",
     });
+  }
+});
+
+//---------------------------------------------------------//
+//-----------------LOGIN ENDPOINT-------------------------//
+//--------------------------------------------------------//
+router.post("/login", async (req, res) => {
+  try {
+    const validation = LoginSchema.safeParse(req.body);
+    if (!validation.success) {
+      res.status(400).json({
+        success: false,
+        errors: validation.error.issues,
+      });
+      return;
+    }
+
+    //This gets the validated data from the request body after going through zod checkings
+    const { email, password } = validation.data;
+
+    const query = `SELECT id, name, username, email, password, role FROM users WHERE email = $1;
+    `;
+    const database_connection = await pool.query(query, [email]);
+    const database_result = database_connection.rows[0];
+
+    //Checks if the database returns an empty data - which means user email doesn't exist
+    if (!database_result) {
+      res.status(404).json({
+        success: false,
+        message: "Invalid email or password.",
+      });
+      return;
+    }
+
+    //checks password after email is confirmed to be valid
+    const passwordMatch = await comparePassword(
+      password,
+      database_result.password,
+    );
+
+    if (!passwordMatch) {
+      res.status(401).json({ success: false, message: "Invalid Password!" });
+      return;
+    }
+
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      console.error("JWT_SECRET is not set in environment variables");
+      return res.status(500).json({
+        success: false,
+        message: "Server configuration error",
+      });
+    }
+
+    const token = jwt.sign(
+      { id: database_result.id, role: database_result.role },
+      jwtSecret,
+      {
+        expiresIn: "24h",
+      },
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Sign In successful.",
+      token,
+      user: {
+        name: database_result.name,
+        username: database_result.username,
+        email: database_result.email
+      },
+    });
+  } catch (error) {
+    console.log("An error occured while signing in:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occured while Signing in."
+    })
   }
 });
 
