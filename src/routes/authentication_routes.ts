@@ -1,9 +1,5 @@
 //This contains the authentication deffinitions (carries the containers)
 import { Router } from "express";
-import {
-  RegisterUserRequest,
-  RegisterUserResponse,
-} from "../types/authentication_types";
 import pool from "../config/database_connection";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
