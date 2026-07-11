@@ -18,4 +18,17 @@ const LoginSchema = z.object({
 });
 export type LoginInput = z.infer<typeof LoginSchema>;
 
-export { RegisterUserSchema, LoginSchema };
+
+// Google Authentication Zod Schema
+ const GoogleAuthSchema = z.object({
+  idToken: z.string().min(1, "Google ID Token is required"),
+});
+
+// Forgot password zod schema
+const ForgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+export type ForgotPasswordInput = z.infer<typeof ForgotPasswordSchema>;
+
+
+export { RegisterUserSchema, LoginSchema, GoogleAuthSchema, ForgotPasswordSchema };

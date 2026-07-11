@@ -13,3 +13,5 @@
 - Added the login endpoint [/auth/login]
 - Added helper functions to help hash password and compare them
 - Added the login schema
+- Replaced the hardcoded password hashing with the new helper function
+- Added a clean logic to check if email and username exists before registration
