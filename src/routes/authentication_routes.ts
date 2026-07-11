@@ -190,7 +190,7 @@ router.post("/login", async (req, res) => {
 //---------------------------------------------------------//
 //-----------------GOOGLE LOGIN ENDPOINT-------------------//
 //---------------------------------------------------------//
-router.post("/auth/google", async (req, res, next) => {
+router.post("/google", async (req, res, next) => {
   try {
     const validation = GoogleAuthSchema.safeParse(req.body);
     if (!validation.success) {

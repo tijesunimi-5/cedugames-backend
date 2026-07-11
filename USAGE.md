@@ -39,7 +39,7 @@ Every inbound HTTP request to the identity ecosystem undergoes a unified 4-stage
 ```json
 {
   "name": "Adeniyi Tolu",
-  "username": "toluwanimi",
+  "username": "toluwa24",
   "email": "tolu@cedugames.com",
   "password": "securePlayerPassword123",
   "age": 21
@@ -56,7 +56,7 @@ Every inbound HTTP request to the identity ecosystem undergoes a unified 4-stage
   "user": {
     "id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
     "name": "Adeniyi Tolu",
-    "username": "toluwanimi",
+    "username": "toluwa24",
     "email": "tolu@cedugames.com",
     "role": "user"
   }
@@ -99,7 +99,7 @@ Every inbound HTTP request to the identity ecosystem undergoes a unified 4-stage
   "user": {
     "id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
     "name": "Adeniyi Tolu",
-    "username": "toluwanimi",
+    "username": "toluwa24",
     "email": "tolu@cedugames.com",
     "role": "user"
   }
@@ -114,6 +114,66 @@ Every inbound HTTP request to the identity ecosystem undergoes a unified 4-stage
 {
   "success": false,
   "message": "Invalid Email or Password."
+}
+```
+
+---
+
+### 🌐 Google OAuth Authentication
+
+- **Endpoint:** `POST /auth/google`
+- **Access Level:** Public
+- **Business Logic:** Receives an incoming Google `idToken` from the client, securely verifies its authenticity using the `google-auth-library` against our `GOOGLE_CLIENT_ID`, and extracts the profile data. It performs an upsert transaction — instantly logging them in if their email exists, or registering them with a fallback randomized username if they are a first-time player.
+
+**Request Payload (JSON)**
+
+```json
+{
+  "idToken": "eyJhbGciOiJIUzI1NiIsImtpZCI6ImU3Y..."
+}
+```
+
+**Success Response (200 OK)**
+
+```json
+{
+  "success": true,
+  "message": "Google authentication successful.",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": "b9c8d7e6-a5b4-3c2d-1e0f-9a8b7c6d5e4f",
+    "name": "Adeniyi Tolu",
+    "username": "toluwa24",
+    "email": "tolu@gmail.com",
+    "role": "user"
+  }
+}
+```
+
+---
+
+### 📩 Forgot Password (OTP Initialization)
+
+- **Endpoint:** `POST /auth/forgot-password`
+- **Access Level:** Public
+- **Business Logic:** Safely normalizes the incoming email (lowercases and trims). If the account exists, it generates a cryptographically random 6-digit numeric OTP and writes it to the database with a purpose scope of `password_reset`. It utilizes an index-inferred `ON CONFLICT` strategy to ensure only one password token remains active per email context.
+
+**Request Payload (JSON)**
+
+```json
+{
+  "email": "tolu@cedugames.com "
+}
+```
+
+**Success Response (200 OK)**
+
+> Note: Uses strategic masking logic to guard against credential probing attacks.
+
+```json
+{
+  "success": true,
+  "message": "If the email exists, an OTP has been sent."
 }
 ```
 
@@ -140,6 +200,25 @@ ON CONFLICT ON CONSTRAINT unique_email_purpose DO UPDATE
 SET otp_code = EXCLUDED.otp_code, expires_at = EXCLUDED.expires_at, is_used = false;
 ```
 
+**Google OAuth Upsert Pipeline**
+
+```sql
+INSERT INTO users (name, username, email, role, is_oauth)
+VALUES ($1, $2, $3, 'user', true)
+ON CONFLICT (email) DO UPDATE
+SET name = EXCLUDED.name, is_oauth = true
+RETURNING id, name, username, email, role;
+```
+
+**Password Reset OTP Upsert**
+
+```sql
+INSERT INTO otps (email, otp_code, purpose, expires_at)
+VALUES ($1, $2, 'password_reset', NOW() + INTERVAL '15 minutes')
+ON CONFLICT (email, purpose) DO UPDATE
+SET otp_code = EXCLUDED.otp_code, expires_at = EXCLUDED.expires_at, is_used = false;
+```
+
 ---
 
 ## 4. Centralized Error Mapping Standards
@@ -152,3 +231,4 @@ All anomalous events thrown down the request pipeline map through the global han
 | JSON Syntax Error | Malformed JSON structural strings passed | 400 Bad Request | `{ success: false, message: "Invalid JSON format payload provided." }` |
 | Unique Key Collision | Registered Email or Username exists | 400 Bad Request | `{ success: false, message: "Username or Email already exists." }` |
 | Database Pool Timeout | Cloud serverless instance timeout | 500 Server Error | `{ success: false, message: "An error occurred..." }` |
+| Uncaught Server Error | Global catch block interception | 500 Server Error | `{ success: false, message: "Internal Server Error" }` |
