@@ -81,8 +81,7 @@ router.post("/user/register", async (req, res) => {
 
     const newUser = database_result.rows[0];
 
-    // Trigger the email service to send the otpCode to the user's email
-    // await sendVerificationEmail(email, otpCode);
+    await SendOtp(email, otpCode);
 
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {

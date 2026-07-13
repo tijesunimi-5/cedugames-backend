@@ -32,7 +32,7 @@ export type ForgotPasswordInput = z.infer<typeof ForgotPasswordSchema>;
 //Verify-otp Zod Schema\
 const VerifyOtpSchema = z.object({
   email: z.string().email(),
-  otp: z.string().length(6),
+  otp: z.number().min(6),
 });
 
 //resend otp zod schema
