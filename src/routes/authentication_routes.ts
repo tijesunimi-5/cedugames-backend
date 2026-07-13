@@ -15,6 +15,7 @@ import { success } from "zod";
 import { comparePassword, hashPassword } from "../helpers/hashPassword";
 import { OAuth2Client } from "google-auth-library";
 import { GoogleAuthSchema } from "../schemas/authentication_schema";
+import { SendOtp } from "../helpers/Mailer";
 
 const router = Router();
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -80,8 +81,7 @@ router.post("/user/register", async (req, res) => {
 
     const newUser = database_result.rows[0];
 
-    // Trigger the email service to send the otpCode to the user's email
-    // await sendVerificationEmail(email, otpCode);
+    await SendOtp(email, otpCode);
 
     const jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
@@ -299,6 +299,7 @@ router.post("/forgot-password", async (req, res) => {
     `;
     await pool.query(otpQuery, [normalizedEmail, otpCode]);
 
+    await SendOtp(normalizedEmail, otpCode);
 
     res.status(200).json({
       success: true,
@@ -315,39 +316,72 @@ router.post("/forgot-password", async (req, res) => {
 //---------------------------------------------------------//
 router.post("/verify-otp", async (req, res) => {
   try {
-    const validation = VerifyOtpSchema.safeParse(req.body);
-    if (!validation.success) {
-      res
-        .status(400)
-        .json({ success: false, message: validation.error.issues });
-      return;
-    }
-    const { email, otp } = validation.data;
-    const normalizedEmail = email.toLowerCase().trim();
+   const { email, otp, purpose } = VerifyOtpSchema.parse(req.body);
+   const normalizedEmail = email.toLowerCase().trim();
 
-    const userCheck = await pool.query(
-      "SELECT id FROM otps WHERE email = $1 AND otp_code = $2 AND purpose = 'password_reset' AND is_used = false AND expires_at > NOW();",
-      [normalizedEmail, otp],
-    );
-    if (userCheck.rows.length === 0) {
-      res.status(200).json({
-        success: false,
-        message: "Invalid or expired verification code.",
-      });
-      return;
-    }
+   //  Check the code against the passed purpose 
+   const verifyQuery = `
+      SELECT id FROM otps 
+      WHERE email = $1 
+        AND otp_code = $2 
+        AND purpose = $3 
+        AND is_used = false 
+        AND expires_at > NOW();
+    `;
+   const result = await pool.query(verifyQuery, [
+     normalizedEmail,
+     otp,
+     purpose,
+   ]);
 
-    const resetToken = jwt.sign(
-      { email, target: "recovery" },
-      process.env.JWT_SECRET as string,
-      { expiresIn: "15m" },
-    );
+   if (result.rows.length === 0) {
+     res
+       .status(400)
+       .json({
+         success: false,
+         message: "Invalid or expired verification code.",
+       });
+     return;
+   }
 
-    res.status(200).json({
-      success: true,
-      message: "OTP verified successfully",
-      resetToken,
-    });
+   //  Generate tokens based on what they are verifying
+   let dataPayload: any = { email: normalizedEmail };
+   let responseMessage = "OTP verified successfully.";
+
+   if (purpose === "password_reset") {
+     // Temporary 15-minute recovery session token to access the /reset-password endpoint safely
+     dataPayload.target = "recovery";
+     const resetToken = jwt.sign(
+       dataPayload,
+       process.env.JWT_SECRET as string,
+       { expiresIn: "15m" },
+     );
+
+     res
+       .status(200)
+       .json({ success: true, message: responseMessage, resetToken });
+     return;
+   }
+
+   if (purpose === "register") {
+     // For registration, changes the user status in database to verified
+     await pool.query("UPDATE users SET is_verified = true WHERE email = $1;", [
+       normalizedEmail,
+     ]);
+     // Burn the registration OTP completely so it can't be re-used
+     await pool.query(
+       "DELETE FROM otps WHERE email = $1 AND purpose = 'register';",
+       [normalizedEmail],
+     );
+
+     res
+       .status(200)
+       .json({
+         success: true,
+         message: "Account verified successfully. You can now log in.",
+       });
+     return;
+   }
   } catch (error) {
     console.log("An error occured: ", error);
     res
@@ -356,5 +390,47 @@ router.post("/verify-otp", async (req, res) => {
   }
 });
 
+//---------------------------------------------------------//
+//------------------RESEND-OTP ENDPOINT--------------------//
+//---------------------------------------------------------//
+router.post("/resend-otp", async (req, res) => {
+  try {
+    const validation = ResendOtpSchema.safeParse(req.body);
+    if (!validation.success) {
+      res.status(400).json({ success: false, errors: validation.error.issues });
+      return;
+    }
+
+    const { email, purpose } = validation.data;
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const userCheck = await pool.query(
+      "SELECT id FROM users WHERE email = $1;",
+      [normalizedEmail],
+    );
+
+    if (userCheck.rows.length == 0) {
+      res.status(200).json({
+        success: true,
+        message: "If the account exists, a new otp has been sent.",
+      });
+      return;
+    }
+
+    const newOtpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const query = `INSERT INTO otps (email, otp_code, purpose, expires_At) VALUES ($1, $2, $3, NOW() + INTERVAL '15 minutes') ON CONFLICT (email, purpose) DO UPDATE SET otp_code = EXCLUDED.otp_code, expires_at = EXCLUDED.expires_at, is_used = false, created_at = NOW()`;
+
+    await pool.query(query, [normalizedEmail, newOtpCode, purpose]);
+
+    await SendOtp(normalizedEmail, newOtpCode);
+    res.status(200).json({
+      success: true,
+      message: "If the account exists, a new otp has been sent.",
+    });
+  } catch (error) {
+    console.log("An error occured: ", error);
+    res.status(500).json({ success: false, message: "An error occured" });
+  }
+});
 
 export default router;
