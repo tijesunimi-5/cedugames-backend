@@ -33,6 +33,9 @@ export type ForgotPasswordInput = z.infer<typeof ForgotPasswordSchema>;
 const VerifyOtpSchema = z.object({
   email: z.string().email(),
   otp: z.number().min(6),
+  purpose: z.enum(["register", "password_reset"], {
+    error: "Invalid OTP Purpose Specified",
+  }),
 });
 
 //resend otp zod schema

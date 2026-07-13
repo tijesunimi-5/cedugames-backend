@@ -323,12 +323,12 @@ router.post("/verify-otp", async (req, res) => {
         .json({ success: false, message: validation.error.issues });
       return;
     }
-    const { email, otp } = validation.data;
+    const { email, otp, purpose } = validation.data;
     const normalizedEmail = email.toLowerCase().trim();
 
     const userCheck = await pool.query(
-      "SELECT id FROM otps WHERE email = $1 AND otp_code = $2 AND purpose = 'password_reset' AND is_used = false AND expires_at > NOW();",
-      [normalizedEmail, otp],
+      "SELECT id FROM otps WHERE email = $1 AND otp_code = $2 AND purpose = $3 AND is_used = false AND expires_at > NOW();",
+      [normalizedEmail, otp, purpose],
     );
     if (userCheck.rows.length === 0) {
       res.status(200).json({
