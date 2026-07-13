@@ -15,6 +15,7 @@ import { success } from "zod";
 import { comparePassword, hashPassword } from "../helpers/hashPassword";
 import { OAuth2Client } from "google-auth-library";
 import { GoogleAuthSchema } from "../schemas/authentication_schema";
+import { SendOtp } from "../helpers/Mailer";
 
 const router = Router();
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -299,6 +300,7 @@ router.post("/forgot-password", async (req, res) => {
     `;
     await pool.query(otpQuery, [normalizedEmail, otpCode]);
 
+    await SendOtp(normalizedEmail, otpCode);
 
     res.status(200).json({
       success: true,
@@ -356,5 +358,47 @@ router.post("/verify-otp", async (req, res) => {
   }
 });
 
+//---------------------------------------------------------//
+//------------------RESEND-OTP ENDPOINT--------------------//
+//---------------------------------------------------------//
+router.post("/resend-otp", async (req, res) => {
+  try {
+    const validation = ResendOtpSchema.safeParse(req.body);
+    if (!validation.success) {
+      res.status(400).json({ success: false, errors: validation.error.issues });
+      return;
+    }
+
+    const { email, purpose } = validation.data;
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const userCheck = await pool.query(
+      "SELECT id FROM users WHERE email = $1;",
+      [normalizedEmail],
+    );
+
+    if (userCheck.rows.length == 0) {
+      res.status(200).json({
+        success: true,
+        message: "If the account exists, a new otp has been sent.",
+      });
+      return;
+    }
+
+    const newOtpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const query = `INSERT INTO otps (email, otp_code, purpose, expires_At) VALUES ($1, $2, $3, NOW() + INTERVAL '15 minutes') ON CONFLICT (email, purpose) DO UPDATE SET otp_code = EXCLUDED.otp_code, expires_at = EXCLUDED.expires_at, is_used = false, created_at = NOW()`;
+
+    await pool.query(query, [normalizedEmail, newOtpCode, purpose]);
+
+    await SendOtp(normalizedEmail, newOtpCode);
+    res.status(200).json({
+      success: true,
+      message: "If the account exists, a new otp has been sent.",
+    });
+  } catch (error) {
+    console.log("An error occured: ", error);
+    res.status(500).json({ success: false, message: "An error occured" });
+  }
+});
 
 export default router;
