@@ -8,6 +8,8 @@ import {
   LoginSchema,
   RegisterUserInput,
   RegisterUserSchema,
+  ResendOtpSchema,
+  VerifyOtpSchema,
 } from "../schemas/authentication_schema";
 import { success } from "zod";
 import { comparePassword, hashPassword } from "../helpers/hashPassword";
@@ -297,7 +299,6 @@ router.post("/forgot-password", async (req, res) => {
     `;
     await pool.query(otpQuery, [normalizedEmail, otpCode]);
 
-    console.log(`[DEV] Reset OTP for ${normalizedEmail}: ${otpCode}`);
 
     res.status(200).json({
       success: true,
@@ -308,5 +309,52 @@ router.post("/forgot-password", async (req, res) => {
     res.status(500).json({ success: false, message: "Internal Serval Error" });
   }
 });
+
+//---------------------------------------------------------//
+//------------------VERIFY-OTP ENDPOINT--------------------//
+//---------------------------------------------------------//
+router.post("/verify-otp", async (req, res) => {
+  try {
+    const validation = VerifyOtpSchema.safeParse(req.body);
+    if (!validation.success) {
+      res
+        .status(400)
+        .json({ success: false, message: validation.error.issues });
+      return;
+    }
+    const { email, otp } = validation.data;
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const userCheck = await pool.query(
+      "SELECT id FROM otps WHERE email = $1 AND otp_code = $2 AND purpose = 'password_reset' AND is_used = false AND expires_at > NOW();",
+      [normalizedEmail, otp],
+    );
+    if (userCheck.rows.length === 0) {
+      res.status(200).json({
+        success: false,
+        message: "Invalid or expired verification code.",
+      });
+      return;
+    }
+
+    const resetToken = jwt.sign(
+      { email, target: "recovery" },
+      process.env.JWT_SECRET as string,
+      { expiresIn: "15m" },
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "OTP verified successfully",
+      resetToken,
+    });
+  } catch (error) {
+    console.log("An error occured: ", error);
+    res
+      .status(500)
+      .json({ success: false, message: "An error occured. Try again later!" });
+  }
+});
+
 
 export default router;
