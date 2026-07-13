@@ -316,39 +316,72 @@ router.post("/forgot-password", async (req, res) => {
 //---------------------------------------------------------//
 router.post("/verify-otp", async (req, res) => {
   try {
-    const validation = VerifyOtpSchema.safeParse(req.body);
-    if (!validation.success) {
-      res
-        .status(400)
-        .json({ success: false, message: validation.error.issues });
-      return;
-    }
-    const { email, otp, purpose } = validation.data;
-    const normalizedEmail = email.toLowerCase().trim();
+   const { email, otp, purpose } = VerifyOtpSchema.parse(req.body);
+   const normalizedEmail = email.toLowerCase().trim();
 
-    const userCheck = await pool.query(
-      "SELECT id FROM otps WHERE email = $1 AND otp_code = $2 AND purpose = $3 AND is_used = false AND expires_at > NOW();",
-      [normalizedEmail, otp, purpose],
-    );
-    if (userCheck.rows.length === 0) {
-      res.status(200).json({
-        success: false,
-        message: "Invalid or expired verification code.",
-      });
-      return;
-    }
+   //  Check the code against the passed purpose 
+   const verifyQuery = `
+      SELECT id FROM otps 
+      WHERE email = $1 
+        AND otp_code = $2 
+        AND purpose = $3 
+        AND is_used = false 
+        AND expires_at > NOW();
+    `;
+   const result = await pool.query(verifyQuery, [
+     normalizedEmail,
+     otp,
+     purpose,
+   ]);
 
-    const resetToken = jwt.sign(
-      { email, target: "recovery" },
-      process.env.JWT_SECRET as string,
-      { expiresIn: "15m" },
-    );
+   if (result.rows.length === 0) {
+     res
+       .status(400)
+       .json({
+         success: false,
+         message: "Invalid or expired verification code.",
+       });
+     return;
+   }
 
-    res.status(200).json({
-      success: true,
-      message: "OTP verified successfully",
-      resetToken,
-    });
+   //  Generate tokens based on what they are verifying
+   let dataPayload: any = { email: normalizedEmail };
+   let responseMessage = "OTP verified successfully.";
+
+   if (purpose === "password_reset") {
+     // Temporary 15-minute recovery session token to access the /reset-password endpoint safely
+     dataPayload.target = "recovery";
+     const resetToken = jwt.sign(
+       dataPayload,
+       process.env.JWT_SECRET as string,
+       { expiresIn: "15m" },
+     );
+
+     res
+       .status(200)
+       .json({ success: true, message: responseMessage, resetToken });
+     return;
+   }
+
+   if (purpose === "register") {
+     // For registration, changes the user status in database to verified
+     await pool.query("UPDATE users SET is_verified = true WHERE email = $1;", [
+       normalizedEmail,
+     ]);
+     // Burn the registration OTP completely so it can't be re-used
+     await pool.query(
+       "DELETE FROM otps WHERE email = $1 AND purpose = 'register';",
+       [normalizedEmail],
+     );
+
+     res
+       .status(200)
+       .json({
+         success: true,
+         message: "Account verified successfully. You can now log in.",
+       });
+     return;
+   }
   } catch (error) {
     console.log("An error occured: ", error);
     res
