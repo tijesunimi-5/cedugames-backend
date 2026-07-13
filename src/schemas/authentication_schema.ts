@@ -18,9 +18,8 @@ const LoginSchema = z.object({
 });
 export type LoginInput = z.infer<typeof LoginSchema>;
 
-
 // Google Authentication Zod Schema
- const GoogleAuthSchema = z.object({
+const GoogleAuthSchema = z.object({
   idToken: z.string().min(1, "Google ID Token is required"),
 });
 
@@ -30,5 +29,25 @@ const ForgotPasswordSchema = z.object({
 });
 export type ForgotPasswordInput = z.infer<typeof ForgotPasswordSchema>;
 
+//Verify-otp Zod Schema\
+const VerifyOtpSchema = z.object({
+  email: z.string().email(),
+  otp: z.string().length(6),
+});
 
-export { RegisterUserSchema, LoginSchema, GoogleAuthSchema, ForgotPasswordSchema };
+//resend otp zod schema
+const ResendOtpSchema = z.object({
+  email: z.string().email("Invalid email address"),
+  purpose: z.enum(["register", "password_reset"], {
+    error: "Invalid OTP Purpose Specified",
+  }),
+});
+
+export {
+  RegisterUserSchema,
+  LoginSchema,
+  GoogleAuthSchema,
+  ForgotPasswordSchema,
+  VerifyOtpSchema,
+  ResendOtpSchema
+};
