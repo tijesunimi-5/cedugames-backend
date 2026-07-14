@@ -21,3 +21,11 @@
 - Google Auth registration - thought the endpoint hasn't been tested and not fully functional, what's needed is the google client id
 - Forgot-password endpoint [/auth/forgor-password]
 - added the zod schema for both the google auth and forgot-password
+
+## July 13
+### Added
+- OTP verification endpoint supporting validation actions [`POST /auth/verify-otp`].
+- Added transactional context-driven OTP generation and dispatch module [`POST /auth/resend-otp`].
+- Created the core mailing framework using `nodemailer` and Brevo SMTP relay transport systems [`Mailer.ts`].
+- Implemented Zod schema parameters for the unified resend and verify tokens.
+

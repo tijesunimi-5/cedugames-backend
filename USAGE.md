@@ -18,7 +18,7 @@ Every inbound HTTP request to the identity ecosystem undergoes a unified 4-stage
    2. Data Validation ──► (Structural constraint check via Zod Schema)
           │
           ▼
-   3. Async Execution ──► (Password hashing, DB queries, JWT generation)
+   3. Async Execution ──► (Password hashing, DB queries, Mailer dispatch, JWT generation)
           │
           ▼
   [ Outbound Response ] ──► (Unified JSON payload or Global Error Interception)
@@ -63,15 +63,6 @@ Every inbound HTTP request to the identity ecosystem undergoes a unified 4-stage
 }
 ```
 
-**Error Response — Sample Collisions & Validations (400 Bad Request)**
-
-```json
-{
-  "success": false,
-  "message": "Username or Email already exists."
-}
-```
-
 ---
 
 ### 🔓 User & Admin Authentication
@@ -106,17 +97,6 @@ Every inbound HTTP request to the identity ecosystem undergoes a unified 4-stage
 }
 ```
 
-**Generic Error Response (401 Unauthorized)**
-
-> Note: Mitigates account enumeration security risks by returning ambiguous messages.
-
-```json
-{
-  "success": false,
-  "message": "Invalid Email or Password."
-}
-```
-
 ---
 
 ### 🌐 Google OAuth Authentication
@@ -133,47 +113,86 @@ Every inbound HTTP request to the identity ecosystem undergoes a unified 4-stage
 }
 ```
 
-**Success Response (200 OK)**
-
-```json
-{
-  "success": true,
-  "message": "Google authentication successful.",
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "user": {
-    "id": "b9c8d7e6-a5b4-3c2d-1e0f-9a8b7c6d5e4f",
-    "name": "Adeniyi Tolu",
-    "username": "toluwa24",
-    "email": "tolu@gmail.com",
-    "role": "user"
-  }
-}
-```
-
 ---
 
 ### 📩 Forgot Password (OTP Initialization)
 
 - **Endpoint:** `POST /auth/forgot-password`
 - **Access Level:** Public
-- **Business Logic:** Safely normalizes the incoming email (lowercases and trims). If the account exists, it generates a cryptographically random 6-digit numeric OTP and writes it to the database with a purpose scope of `password_reset`. It utilizes an index-inferred `ON CONFLICT` strategy to ensure only one password token remains active per email context.
+- **Business Logic:** Safely normalizes the incoming email (lowercases and trims). If the account exists, it generates a cryptographically random 6-digit numeric OTP and writes it to the database with a purpose scope of `password_reset`.
 
 **Request Payload (JSON)**
 
 ```json
 {
-  "email": "tolu@cedugames.com "
+  "email": "tolu@cedugames.com"
 }
 ```
 
-**Success Response (200 OK)**
+---
 
-> Note: Uses strategic masking logic to guard against credential probing attacks.
+### 🔄 Resend OTP
+
+- **Endpoint:** `POST /auth/resend-otp`
+- **Access Level:** Public
+- **Business Logic:** Dynamically handles code regenerations. Accepts a context-driven `purpose` flag to distinguish between registration workflows and password recovery. Regenerates the code string, extends the expiration block by another 15 minutes, clears the `is_used` status back to `false`, and triggers a fresh email dispatch via Brevo.
+
+**Request Payload (JSON)**
+
+```json
+{
+  "email": "tolu@cedugames.com",
+  "purpose": "register"
+}
+```
+
+> Note: Value for `purpose` can be either `"register"` or `"password_reset"`.
+
+**Success Response (200 OK)**
 
 ```json
 {
   "success": true,
-  "message": "If the email exists, an OTP has been sent."
+  "message": "If the account exists, a new OTP has been dispatched."
+}
+```
+
+---
+
+### 🛡️ Generic OTP Verification
+
+- **Endpoint:** `POST /auth/verify-otp`
+- **Access Level:** Public
+- **Business Logic:** A centralized, blind verification handler. Validates data based on the provided `purpose`.
+  - If verifying a `register` purpose, it immediately sets `is_verified = true` on the user account and destroys the used token.
+  - If verifying a `password_reset` purpose, it returns a temporary short-lived `resetToken` granting permission to hit the final recovery step.
+
+**Request Payload (JSON)**
+
+```json
+{
+  "email": "tolu@cedugames.com",
+  "otp": "654321",
+  "purpose": "password_reset"
+}
+```
+
+**Success Response — Registration Purpose (200 OK)**
+
+```json
+{
+  "success": true,
+  "message": "Account verified successfully. You can now log in."
+}
+```
+
+**Success Response — Password Reset Purpose (200 OK)**
+
+```json
+{
+  "success": true,
+  "message": "OTP verified successfully.",
+  "resetToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVC..."
 }
 ```
 
@@ -181,54 +200,54 @@ Every inbound HTTP request to the identity ecosystem undergoes a unified 4-stage
 
 ## 3. Core Database Transactions Reference
 
-Below are the exact execution parameters bound to the Neon Serverless engine via parameterized connection pool states.
+Below are the exact execution parameters bound to the Neon Serverless engine.
 
-**Account Ingestion Query**
+**Dynamic Generic OTP Verification & Filtering Loop**
 
 ```sql
-INSERT INTO users (id, name, username, email, password, age, role, total_xp, coins_count, lives_remaining, created_at, updated_at)
-VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'user', 0, 100, 3, NOW(), NOW())
-RETURNING id, name, username, email, role;
+SELECT id FROM otps
+WHERE email = $1
+  AND otp_code = $2
+  AND purpose = $3
+  AND is_used = false
+  AND expires_at > NOW();
 ```
 
-**Secured One-Time-Password (OTP) Seeding & Upsert**
+**Dynamic Resend/Reset OTP Upsert Engine**
 
 ```sql
 INSERT INTO otps (email, otp_code, purpose, expires_at)
-VALUES ($1, $2, 'register', NOW() + INTERVAL '15 minutes')
-ON CONFLICT ON CONSTRAINT unique_email_purpose DO UPDATE
-SET otp_code = EXCLUDED.otp_code, expires_at = EXCLUDED.expires_at, is_used = false;
-```
-
-**Google OAuth Upsert Pipeline**
-
-```sql
-INSERT INTO users (name, username, email, role, is_oauth)
-VALUES ($1, $2, $3, 'user', true)
-ON CONFLICT (email) DO UPDATE
-SET name = EXCLUDED.name, is_oauth = true
-RETURNING id, name, username, email, role;
-```
-
-**Password Reset OTP Upsert**
-
-```sql
-INSERT INTO otps (email, otp_code, purpose, expires_at)
-VALUES ($1, $2, 'password_reset', NOW() + INTERVAL '15 minutes')
+VALUES ($1, $2, $3, NOW() + INTERVAL '15 minutes')
 ON CONFLICT (email, purpose) DO UPDATE
-SET otp_code = EXCLUDED.otp_code, expires_at = EXCLUDED.expires_at, is_used = false;
+SET
+  otp_code = EXCLUDED.otp_code,
+  expires_at = EXCLUDED.expires_at,
+  is_used = false,
+  created_at = NOW();
 ```
 
 ---
 
-## 4. Centralized Error Mapping Standards
+## 4. Required Mailing Infrastructure Configuration
+
+The outbound transactional notification handler leverages Brevo's SMTP relay service. Developers must guarantee that local configuration systems include these active keys:
+
+```
+BREVO_API_KEY=your_secret_brevo_api_key_here
+SENDER_EMAIL=no-reply@cedugames.com
+```
+
+---
+
+## 5. Centralized Error Mapping Standards
 
 All anomalous events thrown down the request pipeline map through the global handler middleware to maintain a unified contract with the frontend clients:
 
 | Error Type | Simulated Condition | HTTP Status | Response Object Structure |
 |---|---|---|---|
-| Zod ValidationError | Client passes password with < 6 characters | 400 Bad Request | `{ success: false, errors: [...] }` |
+| Zod ValidationError | Client passes input missing required parameters | 400 Bad Request | `{ success: false, errors: [...] }` |
 | JSON Syntax Error | Malformed JSON structural strings passed | 400 Bad Request | `{ success: false, message: "Invalid JSON format payload provided." }` |
 | Unique Key Collision | Registered Email or Username exists | 400 Bad Request | `{ success: false, message: "Username or Email already exists." }` |
+| Expired / Bad Code | Verification token mismatch or timing timeout | 400 Bad Request | `{ success: false, message: "Invalid or expired verification code." }` |
 | Database Pool Timeout | Cloud serverless instance timeout | 500 Server Error | `{ success: false, message: "An error occurred..." }` |
 | Uncaught Server Error | Global catch block interception | 500 Server Error | `{ success: false, message: "Internal Server Error" }` |
