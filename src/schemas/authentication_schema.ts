@@ -46,11 +46,24 @@ const ResendOtpSchema = z.object({
   }),
 });
 
+//reset-password zod schema
+const ResetPasswordSchema = z.object({
+  newPassword: z.string().min(6),
+});
+
+//update password zod schema
+const UpdatePassword = z.object({
+  currentPassword: z.string(),
+  newPassword: z.string().min(6),
+});
+
 export {
   RegisterUserSchema,
   LoginSchema,
   GoogleAuthSchema,
   ForgotPasswordSchema,
   VerifyOtpSchema,
-  ResendOtpSchema
+  ResendOtpSchema,
+  ResetPasswordSchema,
+  UpdatePassword
 };

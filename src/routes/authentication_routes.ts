@@ -9,6 +9,8 @@ import {
   RegisterUserInput,
   RegisterUserSchema,
   ResendOtpSchema,
+  ResetPasswordSchema,
+  UpdatePassword,
   VerifyOtpSchema,
 } from "../schemas/authentication_schema";
 import { success } from "zod";
@@ -16,6 +18,8 @@ import { comparePassword, hashPassword } from "../helpers/hashPassword";
 import { OAuth2Client } from "google-auth-library";
 import { GoogleAuthSchema } from "../schemas/authentication_schema";
 import { SendOtp } from "../helpers/Mailer";
+import { updateUserPasswordInDB } from "../helpers/updatePassword";
+import { verifyPlayerToken } from "../middlewares/authentication_middleware";
 
 const router = Router();
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -316,11 +320,11 @@ router.post("/forgot-password", async (req, res) => {
 //---------------------------------------------------------//
 router.post("/verify-otp", async (req, res) => {
   try {
-   const { email, otp, purpose } = VerifyOtpSchema.parse(req.body);
-   const normalizedEmail = email.toLowerCase().trim();
+    const { email, otp, purpose } = VerifyOtpSchema.parse(req.body);
+    const normalizedEmail = email.toLowerCase().trim();
 
-   //  Check the code against the passed purpose 
-   const verifyQuery = `
+    //  Check the code against the passed purpose
+    const verifyQuery = `
       SELECT id FROM otps 
       WHERE email = $1 
         AND otp_code = $2 
@@ -328,60 +332,57 @@ router.post("/verify-otp", async (req, res) => {
         AND is_used = false 
         AND expires_at > NOW();
     `;
-   const result = await pool.query(verifyQuery, [
-     normalizedEmail,
-     otp,
-     purpose,
-   ]);
+    const result = await pool.query(verifyQuery, [
+      normalizedEmail,
+      otp,
+      purpose,
+    ]);
 
-   if (result.rows.length === 0) {
-     res
-       .status(400)
-       .json({
-         success: false,
-         message: "Invalid or expired verification code.",
-       });
-     return;
-   }
+    if (result.rows.length === 0) {
+      res.status(400).json({
+        success: false,
+        message: "Invalid or expired verification code.",
+      });
+      return;
+    }
 
-   //  Generate tokens based on what they are verifying
-   let dataPayload: any = { email: normalizedEmail };
-   let responseMessage = "OTP verified successfully.";
+    //  Generate tokens based on what they are verifying
+    let dataPayload: any = { email: normalizedEmail };
+    let responseMessage = "OTP verified successfully.";
 
-   if (purpose === "password_reset") {
-     // Temporary 15-minute recovery session token to access the /reset-password endpoint safely
-     dataPayload.target = "recovery";
-     const resetToken = jwt.sign(
-       dataPayload,
-       process.env.JWT_SECRET as string,
-       { expiresIn: "15m" },
-     );
+    if (purpose === "password_reset") {
+      // Temporary 15-minute recovery session token to access the /reset-password endpoint safely
+      dataPayload.target = "recovery";
+      const resetToken = jwt.sign(
+        dataPayload,
+        process.env.JWT_SECRET as string,
+        { expiresIn: "15m" },
+      );
 
-     res
-       .status(200)
-       .json({ success: true, message: responseMessage, resetToken });
-     return;
-   }
+      res
+        .status(200)
+        .json({ success: true, message: responseMessage, resetToken });
+      return;
+    }
 
-   if (purpose === "register") {
-     // For registration, changes the user status in database to verified
-     await pool.query("UPDATE users SET is_verified = true WHERE email = $1;", [
-       normalizedEmail,
-     ]);
-     // Burn the registration OTP completely so it can't be re-used
-     await pool.query(
-       "DELETE FROM otps WHERE email = $1 AND purpose = 'register';",
-       [normalizedEmail],
-     );
+    if (purpose === "register") {
+      // For registration, changes the user status in database to verified
+      await pool.query(
+        "UPDATE users SET is_verified = true WHERE email = $1;",
+        [normalizedEmail],
+      );
+      // Burn the registration OTP completely so it can't be re-used
+      await pool.query(
+        "DELETE FROM otps WHERE email = $1 AND purpose = 'register';",
+        [normalizedEmail],
+      );
 
-     res
-       .status(200)
-       .json({
-         success: true,
-         message: "Account verified successfully. You can now log in.",
-       });
-     return;
-   }
+      res.status(200).json({
+        success: true,
+        message: "Account verified successfully. You can now log in.",
+      });
+      return;
+    }
   } catch (error) {
     console.log("An error occured: ", error);
     res
@@ -430,6 +431,144 @@ router.post("/resend-otp", async (req, res) => {
   } catch (error) {
     console.log("An error occured: ", error);
     res.status(500).json({ success: false, message: "An error occured" });
+  }
+});
+
+//---------------------------------------------------------//
+//----------------RESET-PASSWORD ENDPOINT------------------//
+//---------------------------------------------------------//
+router.post("/reset-password", async (req, res) => {
+  try {
+    const validation = ResetPasswordSchema.safeParse(req.body);
+    if (!validation.success) {
+      res.status(400).json({
+        success: false,
+        errors: validation.error.issues,
+      });
+      return;
+    }
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res
+        .status(401)
+        .json({ success: false, message: "Missing recovery session token." });
+      return;
+    }
+
+    const { newPassword } = validation.data;
+
+    const token = authHeader.split(" ")[1];
+    if (!token) {
+      res
+        .status(401)
+        .json({ success: false, message: "Missing recovery session token." });
+      return;
+    }
+
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      res
+        .status(500)
+        .json({ success: false, message: "JWT secret is not configured." });
+      return;
+    }
+
+    const decoded = jwt.verify(token, jwtSecret) as unknown as {
+      email: string;
+      target: string;
+    };
+
+    if (decoded.target !== "recovery") {
+      res.status(403).json({
+        success: false,
+        message: "Invalid token scope for password reset.",
+      });
+      return;
+    }
+
+    // Call the shared database engine
+    await updateUserPasswordInDB(decoded.email, newPassword);
+
+    await pool.query(
+      "DELETE FROM otps WHERE email = $1 AND purpose = 'password_reset';",
+      [decoded.email],
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Password reset successful. You can now log in.",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "An error occured. Try again later!",
+    });
+  }
+});
+
+//---------------------------------------------------------//
+//----------------UPDATE-PASSWORD ENDPOINT-----------------//
+//---------------------------------------------------------//
+router.post("/update-password", verifyPlayerToken, async (req, res) => {
+  const validation = UpdatePassword.safeParse(req.body);
+  if (!validation.success) {
+    res.status(400).json({
+      success: false,
+      errors: validation.error.issues,
+    });
+    return;
+  }
+
+  const { currentPassword, newPassword } = validation.data;
+  const userId = (req as any).user?.id;
+
+  if (!userId) {
+    res.status(401).json({
+      success: false,
+      message: "Unauthorized: no user session found.",
+    });
+    return;
+  }
+
+  try {
+    const userResult = await pool.query(
+      "SELECT email, password FROM users WHERE id = $1;",
+      [userId],
+    );
+
+    if (userResult.rows.length === 0) {
+      res.status(404).json({
+        success: false,
+        message: "User not found.",
+      });
+      return;
+    }
+
+    const storedPassword = userResult.rows[0].password;
+    const userEmail = userResult.rows[0].email;
+    const passwordMatch = await comparePassword(currentPassword, storedPassword);
+
+    if (!passwordMatch) {
+      res.status(401).json({
+        success: false,
+        message: "Current password is incorrect.",
+      });
+      return;
+    }
+
+    await updateUserPasswordInDB(userEmail, newPassword);
+
+    res.status(200).json({
+      success: true,
+      message: "Password updated successfully.",
+    });
+  } catch (error) {
+    console.error("Error updating password:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occured. Try again later!",
+    });
   }
 });
 

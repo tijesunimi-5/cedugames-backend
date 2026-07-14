@@ -29,3 +29,9 @@
 - Created the core mailing framework using `nodemailer` and Brevo SMTP relay transport systems [`Mailer.ts`].
 - Implemented Zod schema parameters for the unified resend and verify tokens.
 
+## July 14
+### Added
+- Integrated the `verifyPlayerToken` authentication middleware layer to secure active profile setting data routes.
+- Implemented the direct authenticated password modification endpoint [`/auth/update-password`] with current-password verification.
+- Implemented the authenticated session recovery endpoint [`/auth/reset-password-authenticated`] allowing logged-in dashboard users to commit password changes via verified email OTP tokens.
+- Implemented a secure cross-check validator ensuring the email encoded in an OTP session token matches the active Bearer login session context exactly.
