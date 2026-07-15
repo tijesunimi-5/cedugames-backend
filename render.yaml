@@ -16,8 +16,7 @@ services:
         sync: false
       - key: JWT_SECRET
         generateValue: true
-      - key: GOOGLE_CLIENT_ID
-        sync: false
+      # Add GOOGLE_CLIENT_ID in Render when Google authentication is enabled.
       - key: ZOHO_MAIL_API_URL
         value: https://api.zeptomail.com/v1.1/email
       - key: ZOHO_MAIL_API_TOKEN

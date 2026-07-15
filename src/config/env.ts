@@ -22,7 +22,6 @@ if (!parsed.success) {
 }
 if (parsed.data.NODE_ENV === "production") {
   const missing = [
-    !parsed.data.GOOGLE_CLIENT_ID && "GOOGLE_CLIENT_ID",
     !parsed.data.ZOHO_MAIL_API_TOKEN && "ZOHO_MAIL_API_TOKEN",
     !parsed.data.ZOHO_MAIL_FROM && "ZOHO_MAIL_FROM",
   ].filter(Boolean);
