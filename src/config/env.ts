@@ -7,9 +7,11 @@ const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
   JWT_SECRET: z.string().min(32, "JWT_SECRET must contain at least 32 characters"),
   GOOGLE_CLIENT_ID: z.string().default(""),
-  ZEPTOMAIL_TOKEN: z.string().default(""),
-  ZEPTOMAIL_FROM_EMAIL: z.union([z.literal(""), z.string().email()]).default(""),
-  ZEPTOMAIL_FROM_NAME: z.string().min(1).default("CeduGames"),
+  ZOHO_MAIL_API_URL: z.string().url().default("https://api.zeptomail.com/v1.1/email"),
+  ZOHO_MAIL_API_TOKEN: z.string().default(""),
+  ZOHO_MAIL_FROM: z.union([z.literal(""), z.string().email()]).default(""),
+  ZOHO_MAIL_FROM_NAME: z.string().min(1).default("CeduGames"),
+  MAIL_SEND_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(10000),
   CORS_ORIGINS: z.string().default("http://localhost:3000,http://localhost:5173"),
 });
 
@@ -21,8 +23,8 @@ if (!parsed.success) {
 if (parsed.data.NODE_ENV === "production") {
   const missing = [
     !parsed.data.GOOGLE_CLIENT_ID && "GOOGLE_CLIENT_ID",
-    !parsed.data.ZEPTOMAIL_TOKEN && "ZEPTOMAIL_TOKEN",
-    !parsed.data.ZEPTOMAIL_FROM_EMAIL && "ZEPTOMAIL_FROM_EMAIL",
+    !parsed.data.ZOHO_MAIL_API_TOKEN && "ZOHO_MAIL_API_TOKEN",
+    !parsed.data.ZOHO_MAIL_FROM && "ZOHO_MAIL_FROM",
   ].filter(Boolean);
   if (missing.length) throw new Error(`Missing production configuration: ${missing.join(", ")}`);
 }

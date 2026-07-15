@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: cedugames-backend
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build && npm run migrate
+    startCommand: npm start
+    healthCheckPath: /health/ready
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: ZOHO_MAIL_API_URL
+        value: https://api.zeptomail.com/v1.1/email
+      - key: ZOHO_MAIL_API_TOKEN
+        sync: false
+      - key: ZOHO_MAIL_FROM
+        sync: false
+      - key: ZOHO_MAIL_FROM_NAME
+        value: CeduGames
+      - key: MAIL_SEND_TIMEOUT_MS
+        value: "10000"
+      - key: CORS_ORIGINS
+        sync: false

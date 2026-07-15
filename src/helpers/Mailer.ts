@@ -1,24 +1,25 @@
 import { env } from "../config/env";
 
 export const SendOtp = async (email: string, otp: string): Promise<void> => {
-  if (!env.ZEPTOMAIL_TOKEN || !env.ZEPTOMAIL_FROM_EMAIL) {
+  if (!env.ZOHO_MAIL_API_TOKEN || !env.ZOHO_MAIL_FROM) {
     throw new Error("ZeptoMail is not configured");
   }
 
   try {
-    const response = await fetch("https://api.zeptomail.com/v1.1/email", {
+    const response = await fetch(env.ZOHO_MAIL_API_URL, {
       method: "POST",
       headers: {
         accept: "application/json",
-        Authorization: `zoho-enczapikey ${env.ZEPTOMAIL_TOKEN}`,
+        Authorization: `zoho-enczapikey ${env.ZOHO_MAIL_API_TOKEN}`,
         "content-type": "application/json",
       },
+      signal: AbortSignal.timeout(env.MAIL_SEND_TIMEOUT_MS),
       body: JSON.stringify({
         subject: " Secure One-Time Password (OTP) Verification",
 
         from: {
-          name: env.ZEPTOMAIL_FROM_NAME,
-          address: env.ZEPTOMAIL_FROM_EMAIL,
+          name: env.ZOHO_MAIL_FROM_NAME,
+          address: env.ZOHO_MAIL_FROM,
         },
         to: [{ email_address: { address: email, name: email } }],
         htmlbody: `
