@@ -5,7 +5,7 @@ const RegisterUserSchema = z.object({
   name: z.string().min(2),
   username: z.string().min(3),
   email: z.string().email(),
-  password: z.string().min(6),
+  password: z.string().min(10).max(128),
   age: z.number().int().positive(),
 });
 
@@ -14,7 +14,7 @@ export type RegisterUserInput = z.infer<typeof RegisterUserSchema>;
 //Login Zod Schema
 const LoginSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(6),
+  password: z.string().min(10).max(128),
 });
 export type LoginInput = z.infer<typeof LoginSchema>;
 
@@ -32,7 +32,7 @@ export type ForgotPasswordInput = z.infer<typeof ForgotPasswordSchema>;
 //Verify-otp Zod Schema\
 const VerifyOtpSchema = z.object({
   email: z.string().email(),
-  otp: z.number().min(6),
+  otp: z.string().regex(/^\d{6}$/, "OTP must contain exactly six digits"),
   purpose: z.enum(["register", "password_reset"], {
     error: "Invalid OTP Purpose Specified",
   }),
@@ -48,13 +48,13 @@ const ResendOtpSchema = z.object({
 
 //reset-password zod schema
 const ResetPasswordSchema = z.object({
-  newPassword: z.string().min(6),
+  newPassword: z.string().min(10).max(128),
 });
 
 //update password zod schema
 const UpdatePassword = z.object({
   currentPassword: z.string(),
-  newPassword: z.string().min(6),
+  newPassword: z.string().min(10).max(128),
 });
 
 export {

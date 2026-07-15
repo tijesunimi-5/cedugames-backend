@@ -1,575 +1,192 @@
-//This contains the authentication deffinitions (carries the containers)
 import { Router } from "express";
-import pool from "../config/database_connection";
+import crypto from "node:crypto";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import {
-  ForgotPasswordSchema,
-  LoginSchema,
-  RegisterUserInput,
-  RegisterUserSchema,
-  ResendOtpSchema,
-  ResetPasswordSchema,
-  UpdatePassword,
-  VerifyOtpSchema,
-} from "../schemas/authentication_schema";
-import { success } from "zod";
-import { comparePassword, hashPassword } from "../helpers/hashPassword";
 import { OAuth2Client } from "google-auth-library";
-import { GoogleAuthSchema } from "../schemas/authentication_schema";
+import { rateLimit } from "express-rate-limit";
+import pool from "../config/database_connection";
+import { env } from "../config/env";
+import { comparePassword, hashPassword } from "../helpers/hashPassword";
 import { SendOtp } from "../helpers/Mailer";
-import { updateUserPasswordInDB } from "../helpers/updatePassword";
-import { verifyPlayerToken } from "../middlewares/authentication_middleware";
+import { generateOtp, hashOtp } from "../helpers/otp";
+import { verifyPlayerToken, type AuthenticatedRequest } from "../middlewares/authentication_middleware";
+import {
+  ForgotPasswordSchema, GoogleAuthSchema, LoginSchema, RegisterUserSchema,
+  ResendOtpSchema, ResetPasswordSchema, UpdatePassword, VerifyOtpSchema,
+} from "../schemas/authentication_schema";
 
 const router = Router();
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const googleClient = new OAuth2Client(env.GOOGLE_CLIENT_ID || undefined);
+const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 30, standardHeaders: "draft-8", legacyHeaders: false });
+const sensitiveLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 8, standardHeaders: "draft-8", legacyHeaders: false });
+router.use(authLimiter);
 
-//------------------------------------------------------//
-/* THE REGISTRATION ENDPOINT (CREATE AN ACCOUNT)       */
-//-----------------------------------------------------//
+const normalizeEmail = (email: string) => email.trim().toLowerCase();
+const signSession = (user: { id: string; role: string; token_version: number }) =>
+  jwt.sign({ id: user.id, role: user.role, ver: user.token_version }, env.JWT_SECRET, {
+    expiresIn: "24h", issuer: "cedugames-api", audience: "cedugames-client",
+  });
 
-router.post("/user/register", async (req, res) => {
+router.post("/user/register", sensitiveLimiter, async (req, res) => {
+  const validation = RegisterUserSchema.safeParse(req.body);
+  if (!validation.success) return res.status(400).json({ success: false, errors: validation.error.issues });
+  const { name, password, age } = validation.data;
+  const email = normalizeEmail(validation.data.email);
+  const username = validation.data.username.trim().toLowerCase();
+  const otp = generateOtp();
+  const client = await pool.connect();
   try {
-    //Validate the incoming body against Zod schema
-    const validation = RegisterUserSchema.safeParse(req.body);
-    if (!validation.success) {
-      res.status(400).json({
-        success: false,
-        errors: validation.error.issues,
-      });
-      return;
-    }
-
-    const { name, username, email, password, age } = validation.data;
-    const checkUserQuery = `
-      SELECT email, username FROM users WHERE email = $1 OR username = $2;
-    `;
-    const checkResult = await pool.query(checkUserQuery, [email, username]);
-
-    if (checkResult.rows.length > 0) {
-      const existingUser = checkResult.rows[0];
-
-      const message =
-        existingUser.email === email
-          ? "An account with this email already exists."
-          : "This username is already taken.";
-
-      res.status(400).json({
-        success: false,
-        message,
-      });
-      return;
-    }
-
+    await client.query("BEGIN");
     const hashedPassword = await hashPassword(password);
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const user = await client.query(
+      `INSERT INTO users (name, username, email, password, age)
+       VALUES ($1,$2,$3,$4,$5) RETURNING id,name,username,email,role`,
+      [name.trim(), username, email, hashedPassword, age],
+    );
+    await client.query(
+      `INSERT INTO otps(email,otp_code,purpose,expires_at) VALUES($1,$2,'register',NOW()+INTERVAL '15 minutes')
+       ON CONFLICT(email,purpose) DO UPDATE SET otp_code=EXCLUDED.otp_code,expires_at=EXCLUDED.expires_at,is_used=false,failed_attempts=0,created_at=NOW()`,
+      [email, hashOtp(email, "register", otp)],
+    );
+    await SendOtp(email, otp);
+    await client.query("COMMIT");
+    return res.status(201).json({ success: true, message: "Registration successful. Please verify your email.", user: user.rows[0] });
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    if (error?.code === "23505") return res.status(409).json({ success: false, message: "Email or username is already registered." });
+    console.error("Registration failed", error);
+    return res.status(500).json({ success: false, message: "Registration could not be completed." });
+  } finally { client.release(); }
+});
 
-    const insertQuery = `
-      INSERT INTO users (id, name, username, email, password, age, role, total_xp, coins_count, lives_remaining, created_at, updated_at) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'user', 0, 100, 3, NOW(), NOW()) RETURNING id, name, username, email, role;
-    `;
-    const otpQuery = `
-      INSERT INTO otps (email, otp_code, purpose, expires_at)
-      VALUES ($1, $2, 'register', NOW() + INTERVAL '15 minutes')
-      ON CONFLICT (email, purpose) DO UPDATE 
-      SET otp_code = EXCLUDED.otp_code, expires_at = EXCLUDED.expires_at, is_used = false;
-    `;
-    await pool.query(otpQuery, [email, otpCode]);
-
-    const database_result = await pool.query(insertQuery, [
-      name,
-      username,
-      email,
-      hashedPassword,
-      age,
-    ]);
-
-    const newUser = database_result.rows[0];
-
-    await SendOtp(email, otpCode);
-
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      console.error("JWT_SECRET is not set in environment variables");
-      return res.status(500).json({
-        success: false,
-        message: "Server configuration error",
-      });
-    }
-
-    const token = jwt.sign({ id: newUser.id, role: newUser.role }, jwtSecret, {
-      expiresIn: "24h",
-    });
-
-    res.status(201).json({
-      success: true,
-      message: "Registration successful. Please verify your email.",
-      token,
-      user: newUser,
-    });
+router.post("/login", sensitiveLimiter, async (req, res) => {
+  const validation = LoginSchema.safeParse(req.body);
+  if (!validation.success) return res.status(400).json({ success: false, errors: validation.error.issues });
+  const email = normalizeEmail(validation.data.email);
+  try {
+    const result = await pool.query("SELECT id,name,username,email,password,role,is_verified,token_version FROM users WHERE lower(email)=$1", [email]);
+    const user = result.rows[0];
+    const matches = user?.password ? await comparePassword(validation.data.password, user.password) : false;
+    if (!matches) return res.status(401).json({ success: false, message: "Invalid email or password." });
+    if (!user.is_verified) return res.status(403).json({ success: false, message: "Verify your email before signing in." });
+    return res.json({ success: true, message: "Sign in successful.", token: signSession(user), user: { id: user.id, name: user.name, username: user.username, email: user.email, role: user.role } });
   } catch (error) {
-    console.error("Error during user registration:", error);
-    res.status(500).json({
-      success: false,
-      message: "An error occurred while registering the user.",
-    });
+    console.error("Login failed", error);
+    return res.status(500).json({ success: false, message: "Sign in could not be completed." });
   }
 });
 
-//---------------------------------------------------------//
-//-----------------LOGIN ENDPOINT-------------------------//
-//--------------------------------------------------------//
-router.post("/login", async (req, res) => {
+router.post("/google", sensitiveLimiter, async (req, res, next) => {
+  const validation = GoogleAuthSchema.safeParse(req.body);
+  if (!validation.success) return res.status(400).json({ success: false, errors: validation.error.issues });
+  if (!env.GOOGLE_CLIENT_ID) return res.status(503).json({ success: false, message: "Google authentication is not configured." });
   try {
-    const validation = LoginSchema.safeParse(req.body);
-    if (!validation.success) {
-      res.status(400).json({
-        success: false,
-        errors: validation.error.issues,
-      });
-      return;
-    }
-
-    //This gets the validated data from the request body after going through zod checkings
-    const { email, password } = validation.data;
-
-    const query = `SELECT id, name, username, email, password, role FROM users WHERE email = $1;
-    `;
-    const database_connection = await pool.query(query, [email]);
-    const database_result = database_connection.rows[0];
-
-    //Checks if the database returns an empty data - which means user email doesn't exist
-    if (!database_result) {
-      res.status(404).json({
-        success: false,
-        message: "Invalid email or password.",
-      });
-      return;
-    }
-
-    //checks password after email is confirmed to be valid
-    const passwordMatch = await comparePassword(
-      password,
-      database_result.password,
-    );
-
-    if (!passwordMatch) {
-      res.status(401).json({ success: false, message: "Invalid Password!" });
-      return;
-    }
-
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      console.error("JWT_SECRET is not set in environment variables");
-      return res.status(500).json({
-        success: false,
-        message: "Server configuration error",
-      });
-    }
-
-    const token = jwt.sign(
-      { id: database_result.id, role: database_result.role },
-      jwtSecret,
-      {
-        expiresIn: "24h",
-      },
-    );
-
-    res.status(200).json({
-      success: true,
-      message: "Sign In successful.",
-      token,
-      user: {
-        name: database_result.name,
-        username: database_result.username,
-        email: database_result.email,
-      },
-    });
-  } catch (error) {
-    console.log("An error occured while signing in:", error);
-    res.status(500).json({
-      success: false,
-      message: "An error occured while Signing in.",
-    });
-  }
-});
-
-//---------------------------------------------------------//
-//-----------------GOOGLE LOGIN ENDPOINT-------------------//
-//---------------------------------------------------------//
-router.post("/google", async (req, res, next) => {
-  try {
-    const validation = GoogleAuthSchema.safeParse(req.body);
-    if (!validation.success) {
-      res.status(400).json({ success: false, errors: validation.error.issues });
-      return;
-    }
-
-    const { idToken } = validation.data;
-
-    // Verify the token with Google's servers
-    const ticket = await googleClient.verifyIdToken({
-      idToken,
-      // process.env types may include undefined; assert string to satisfy VerifyIdTokenOptions
-      audience: process.env.GOOGLE_CLIENT_ID as string,
-    });
-
+    const ticket = await googleClient.verifyIdToken({ idToken: validation.data.idToken, audience: env.GOOGLE_CLIENT_ID });
     const payload = ticket.getPayload();
-    if (!payload || !payload.email) {
-      res
-        .status(400)
-        .json({ success: false, message: "Invalid Google Token payload." });
-      return;
-    }
-
-    const { email, name } = payload;
-    // Ensure email is a string and generate a random clean username out of its prefix
-    const emailStr = String(email);
-    const emailPrefix = emailStr.split("@")[0] || emailStr;
-    const fallbackUsername =
-      emailPrefix + Math.floor(1000 + Math.random() * 9000);
-
-    // Upsert (Insert or Login) into Neon PostgreSQL database
-    const googleUserQuery = `
-      INSERT INTO users (name, username, email, role, is_oauth)
-      VALUES ($1, $2, $3, 'user', true)
-      ON CONFLICT (email) DO UPDATE 
-      SET name = EXCLUDED.name, is_oauth = true
-      RETURNING id, name, username, email, role;
-    `;
-
-    const dbResult = await pool.query(googleUserQuery, [
-      name,
-      fallbackUsername,
-      email,
-    ]);
-    const user = dbResult.rows[0];
-
-    // Issue CeduGames signed session JWT
-    const jwtSecret = process.env.JWT_SECRET || "fallback_secret";
-    const token = jwt.sign({ id: user.id, role: user.role }, jwtSecret, {
-      expiresIn: "24h",
-    });
-
-    res.status(200).json({
-      success: true,
-      message: "Google authentication successful.",
-      token,
-      user,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-//---------------------------------------------------------//
-//---------------FORGOT-PASSWORD ENDPOINT------------------//
-//---------------------------------------------------------//
-router.post("/forgot-password", async (req, res) => {
-  try {
-    const validation = ForgotPasswordSchema.safeParse(req.body);
-    if (!validation.success) {
-      res
-        .status(400)
-        .json({ success: false, message: validation.error.issues });
-      return;
-    }
-
-    const { email } = validation.data;
-    const normalizedEmail = email.toLowerCase().trim();
-    console.log("Email: ", email, "Normalized Email: ", normalizedEmail);
-
-    const userCheck = await pool.query(
-      "SELECT id FROM users WHERE email = $1;",
-      [normalizedEmail],
+    if (!payload?.email || !payload.email_verified) return res.status(400).json({ success: false, message: "Google email is not verified." });
+    const email = normalizeEmail(payload.email);
+    const base = email.split("@")[0]!.replace(/[^a-z0-9_]/g, "").slice(0, 25) || "player";
+    const username = `${base}_${crypto.randomUUID().slice(0, 8)}`;
+    const result = await pool.query(
+      `INSERT INTO users(name,username,email,role,is_oauth,is_verified) VALUES($1,$2,$3,'user',true,true)
+       ON CONFLICT((lower(email))) DO UPDATE SET name=EXCLUDED.name,is_oauth=true,is_verified=true,updated_at=NOW()
+       RETURNING id,name,username,email,role,token_version`,
+      [payload.name || base, username, email],
     );
-    if (userCheck.rows.length === 0) {
-      res.status(200).json({
-        success: true,
-        message: "If the email exists, an OTP has been sent.",
-      });
-      return;
-    }
-
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-
-    const otpQuery = `
-      INSERT INTO otps (email, otp_code, purpose, expires_at)
-  VALUES ($1, $2, 'password_reset', NOW() + INTERVAL '15 minutes')
-  ON CONFLICT (email, purpose) DO UPDATE 
-  SET 
-    otp_code = EXCLUDED.otp_code, 
-    expires_at = EXCLUDED.expires_at, 
-    is_used = false;
-    `;
-    await pool.query(otpQuery, [normalizedEmail, otpCode]);
-
-    await SendOtp(normalizedEmail, otpCode);
-
-    res.status(200).json({
-      success: true,
-      message: "If the email exists, an OTP has been sent.",
-    });
-  } catch (error) {
-    console.log("An error occured:", error);
-    res.status(500).json({ success: false, message: "Internal Serval Error" });
-  }
+    const user = result.rows[0];
+    return res.json({ success: true, message: "Google authentication successful.", token: signSession(user), user });
+  } catch (error) { next(error); }
 });
 
-//---------------------------------------------------------//
-//------------------VERIFY-OTP ENDPOINT--------------------//
-//---------------------------------------------------------//
-router.post("/verify-otp", async (req, res) => {
+async function issueOtp(emailValue: string, purpose: "register" | "password_reset") {
+  const email = normalizeEmail(emailValue);
+  const user = await pool.query("SELECT id,is_verified FROM users WHERE lower(email)=$1", [email]);
+  if (!user.rows[0]) return;
+  if (purpose === "register" && user.rows[0].is_verified) return;
+  const otp = generateOtp();
+  await pool.query(
+    `INSERT INTO otps(email,otp_code,purpose,expires_at) VALUES($1,$2,$3,NOW()+INTERVAL '15 minutes')
+     ON CONFLICT(email,purpose) DO UPDATE SET otp_code=EXCLUDED.otp_code,expires_at=EXCLUDED.expires_at,is_used=false,failed_attempts=0,created_at=NOW()`,
+    [email, hashOtp(email, purpose, otp), purpose],
+  );
+  await SendOtp(email, otp);
+}
+
+router.post("/forgot-password", sensitiveLimiter, async (req, res) => {
+  const validation = ForgotPasswordSchema.safeParse(req.body);
+  if (!validation.success) return res.status(400).json({ success: false, errors: validation.error.issues });
+  try { await issueOtp(validation.data.email, "password_reset"); }
+  catch (error) { console.error("Password OTP failed", error); }
+  return res.json({ success: true, message: "If the account exists, an OTP has been sent." });
+});
+
+router.post("/resend-otp", sensitiveLimiter, async (req, res) => {
+  const validation = ResendOtpSchema.safeParse(req.body);
+  if (!validation.success) return res.status(400).json({ success: false, errors: validation.error.issues });
+  try { await issueOtp(validation.data.email, validation.data.purpose); }
+  catch (error) { console.error("OTP resend failed", error); }
+  return res.json({ success: true, message: "If the account exists, a new OTP has been sent." });
+});
+
+router.post("/verify-otp", sensitiveLimiter, async (req, res) => {
+  const validation = VerifyOtpSchema.safeParse(req.body);
+  if (!validation.success) return res.status(400).json({ success: false, errors: validation.error.issues });
+  const { otp, purpose } = validation.data;
+  const email = normalizeEmail(validation.data.email);
+  const expected = hashOtp(email, purpose, otp);
+  const client = await pool.connect();
   try {
-    const { email, otp, purpose } = VerifyOtpSchema.parse(req.body);
-    const normalizedEmail = email.toLowerCase().trim();
-
-    //  Check the code against the passed purpose
-    const verifyQuery = `
-      SELECT id FROM otps 
-      WHERE email = $1 
-        AND otp_code = $2 
-        AND purpose = $3 
-        AND is_used = false 
-        AND expires_at > NOW();
-    `;
-    const result = await pool.query(verifyQuery, [
-      normalizedEmail,
-      otp,
-      purpose,
-    ]);
-
-    if (result.rows.length === 0) {
-      res.status(400).json({
-        success: false,
-        message: "Invalid or expired verification code.",
-      });
-      return;
+    await client.query("BEGIN");
+    const result = await client.query(
+      `SELECT id FROM otps WHERE email=$1 AND purpose=$2 AND otp_code=$3 AND is_used=false
+       AND failed_attempts<5 AND expires_at>NOW() FOR UPDATE`, [email, purpose, expected],
+    );
+    if (!result.rows[0]) {
+      await client.query("UPDATE otps SET failed_attempts=failed_attempts+1 WHERE email=$1 AND purpose=$2 AND is_used=false", [email, purpose]);
+      await client.query("COMMIT");
+      return res.status(400).json({ success: false, message: "Invalid or expired verification code." });
     }
-
-    //  Generate tokens based on what they are verifying
-    let dataPayload: any = { email: normalizedEmail };
-    let responseMessage = "OTP verified successfully.";
-
-    if (purpose === "password_reset") {
-      // Temporary 15-minute recovery session token to access the /reset-password endpoint safely
-      dataPayload.target = "recovery";
-      const resetToken = jwt.sign(
-        dataPayload,
-        process.env.JWT_SECRET as string,
-        { expiresIn: "15m" },
-      );
-
-      res
-        .status(200)
-        .json({ success: true, message: responseMessage, resetToken });
-      return;
-    }
-
     if (purpose === "register") {
-      // For registration, changes the user status in database to verified
-      await pool.query(
-        "UPDATE users SET is_verified = true WHERE email = $1;",
-        [normalizedEmail],
-      );
-      // Burn the registration OTP completely so it can't be re-used
-      await pool.query(
-        "DELETE FROM otps WHERE email = $1 AND purpose = 'register';",
-        [normalizedEmail],
-      );
-
-      res.status(200).json({
-        success: true,
-        message: "Account verified successfully. You can now log in.",
-      });
-      return;
+      await client.query("UPDATE users SET is_verified=true,updated_at=NOW() WHERE lower(email)=$1", [email]);
+      await client.query("UPDATE otps SET is_used=true WHERE id=$1", [result.rows[0].id]);
+      await client.query("COMMIT");
+      return res.json({ success: true, message: "Account verified successfully. You can now log in." });
     }
-  } catch (error) {
-    console.log("An error occured: ", error);
-    res
-      .status(500)
-      .json({ success: false, message: "An error occured. Try again later!" });
-  }
+    const resetToken = jwt.sign({ email, target: "recovery", otpId: result.rows[0].id }, env.JWT_SECRET, {
+      expiresIn: "15m", issuer: "cedugames-api", audience: "cedugames-recovery",
+    });
+    await client.query("COMMIT");
+    return res.json({ success: true, message: "OTP verified successfully.", resetToken });
+  } catch (error) { await client.query("ROLLBACK"); throw error; }
+  finally { client.release(); }
 });
 
-//---------------------------------------------------------//
-//------------------RESEND-OTP ENDPOINT--------------------//
-//---------------------------------------------------------//
-router.post("/resend-otp", async (req, res) => {
+router.post("/reset-password", sensitiveLimiter, async (req, res) => {
+  const validation = ResetPasswordSchema.safeParse(req.body);
+  if (!validation.success) return res.status(400).json({ success: false, errors: validation.error.issues });
+  const token = req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : "";
+  if (!token) return res.status(401).json({ success: false, message: "Missing recovery session token." });
+  const client = await pool.connect();
   try {
-    const validation = ResendOtpSchema.safeParse(req.body);
-    if (!validation.success) {
-      res.status(400).json({ success: false, errors: validation.error.issues });
-      return;
-    }
-
-    const { email, purpose } = validation.data;
-    const normalizedEmail = email.toLowerCase().trim();
-
-    const userCheck = await pool.query(
-      "SELECT id FROM users WHERE email = $1;",
-      [normalizedEmail],
-    );
-
-    if (userCheck.rows.length == 0) {
-      res.status(200).json({
-        success: true,
-        message: "If the account exists, a new otp has been sent.",
-      });
-      return;
-    }
-
-    const newOtpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const query = `INSERT INTO otps (email, otp_code, purpose, expires_At) VALUES ($1, $2, $3, NOW() + INTERVAL '15 minutes') ON CONFLICT (email, purpose) DO UPDATE SET otp_code = EXCLUDED.otp_code, expires_at = EXCLUDED.expires_at, is_used = false, created_at = NOW()`;
-
-    await pool.query(query, [normalizedEmail, newOtpCode, purpose]);
-
-    await SendOtp(normalizedEmail, newOtpCode);
-    res.status(200).json({
-      success: true,
-      message: "If the account exists, a new otp has been sent.",
-    });
-  } catch (error) {
-    console.log("An error occured: ", error);
-    res.status(500).json({ success: false, message: "An error occured" });
-  }
+    const decoded = jwt.verify(token, env.JWT_SECRET, { issuer: "cedugames-api", audience: "cedugames-recovery" }) as { email: string; target: string; otpId: string };
+    if (decoded.target !== "recovery") return res.status(403).json({ success: false, message: "Invalid recovery token." });
+    await client.query("BEGIN");
+    const consumed = await client.query("UPDATE otps SET is_used=true WHERE id=$1 AND email=$2 AND is_used=false AND expires_at>NOW() RETURNING id", [decoded.otpId, decoded.email]);
+    if (!consumed.rows[0]) { await client.query("ROLLBACK"); return res.status(403).json({ success: false, message: "Recovery token was already used or expired." }); }
+    await client.query("UPDATE users SET password=$1,token_version=token_version+1,updated_at=NOW() WHERE lower(email)=$2", [await hashPassword(validation.data.newPassword), decoded.email]);
+    await client.query("COMMIT");
+    return res.json({ success: true, message: "Password reset successful. You can now log in." });
+  } catch { await client.query("ROLLBACK"); return res.status(403).json({ success: false, message: "Invalid or expired recovery token." }); }
+  finally { client.release(); }
 });
 
-//---------------------------------------------------------//
-//----------------RESET-PASSWORD ENDPOINT------------------//
-//---------------------------------------------------------//
-router.post("/reset-password", async (req, res) => {
-  try {
-    const validation = ResetPasswordSchema.safeParse(req.body);
-    if (!validation.success) {
-      res.status(400).json({
-        success: false,
-        errors: validation.error.issues,
-      });
-      return;
-    }
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res
-        .status(401)
-        .json({ success: false, message: "Missing recovery session token." });
-      return;
-    }
-
-    const { newPassword } = validation.data;
-
-    const token = authHeader.split(" ")[1];
-    if (!token) {
-      res
-        .status(401)
-        .json({ success: false, message: "Missing recovery session token." });
-      return;
-    }
-
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      res
-        .status(500)
-        .json({ success: false, message: "JWT secret is not configured." });
-      return;
-    }
-
-    const decoded = jwt.verify(token, jwtSecret) as unknown as {
-      email: string;
-      target: string;
-    };
-
-    if (decoded.target !== "recovery") {
-      res.status(403).json({
-        success: false,
-        message: "Invalid token scope for password reset.",
-      });
-      return;
-    }
-
-    // Call the shared database engine
-    await updateUserPasswordInDB(decoded.email, newPassword);
-
-    await pool.query(
-      "DELETE FROM otps WHERE email = $1 AND purpose = 'password_reset';",
-      [decoded.email],
-    );
-
-    res.status(200).json({
-      success: true,
-      message: "Password reset successful. You can now log in.",
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "An error occured. Try again later!",
-    });
-  }
-});
-
-//---------------------------------------------------------//
-//----------------UPDATE-PASSWORD ENDPOINT-----------------//
-//---------------------------------------------------------//
-router.post("/update-password", verifyPlayerToken, async (req, res) => {
+router.post("/update-password", verifyPlayerToken, async (req: AuthenticatedRequest, res) => {
   const validation = UpdatePassword.safeParse(req.body);
-  if (!validation.success) {
-    res.status(400).json({
-      success: false,
-      errors: validation.error.issues,
-    });
-    return;
-  }
-
-  const { currentPassword, newPassword } = validation.data;
-  const userId = (req as any).user?.id;
-
-  if (!userId) {
-    res.status(401).json({
-      success: false,
-      message: "Unauthorized: no user session found.",
-    });
-    return;
-  }
-
-  try {
-    const userResult = await pool.query(
-      "SELECT email, password FROM users WHERE id = $1;",
-      [userId],
-    );
-
-    if (userResult.rows.length === 0) {
-      res.status(404).json({
-        success: false,
-        message: "User not found.",
-      });
-      return;
-    }
-
-    const storedPassword = userResult.rows[0].password;
-    const userEmail = userResult.rows[0].email;
-    const passwordMatch = await comparePassword(currentPassword, storedPassword);
-
-    if (!passwordMatch) {
-      res.status(401).json({
-        success: false,
-        message: "Current password is incorrect.",
-      });
-      return;
-    }
-
-    await updateUserPasswordInDB(userEmail, newPassword);
-
-    res.status(200).json({
-      success: true,
-      message: "Password updated successfully.",
-    });
-  } catch (error) {
-    console.error("Error updating password:", error);
-    res.status(500).json({
-      success: false,
-      message: "An error occured. Try again later!",
-    });
-  }
+  if (!validation.success) return res.status(400).json({ success: false, errors: validation.error.issues });
+  const user = await pool.query("SELECT password FROM users WHERE id=$1", [req.user!.id]);
+  if (!user.rows[0]?.password || !(await comparePassword(validation.data.currentPassword, user.rows[0].password))) return res.status(401).json({ success: false, message: "Current password is incorrect." });
+  await pool.query("UPDATE users SET password=$1,token_version=token_version+1,updated_at=NOW() WHERE id=$2", [await hashPassword(validation.data.newPassword), req.user!.id]);
+  return res.json({ success: true, message: "Password updated successfully. Sign in again on other devices." });
 });
 
 export default router;

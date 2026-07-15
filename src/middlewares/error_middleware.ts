@@ -1,38 +1,16 @@
-//This handles the global error handling
-import { Request, Response, NextFunction } from "express";
+import type { Request, Response, NextFunction } from "express";
+import { env } from "../config/env";
 
-export const handleGlobalErrors = (
-  err: any,
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): void => {
-  
-  if (
-    err instanceof SyntaxError &&
-    "status" in err &&
-    err.status === 400 &&
-    "body" in err
-  ) {
-    res.status(400).json({
-      success: false,
-      message: "Invalid JSON format payload provided.",
-    });
+export const handleGlobalErrors = (err: any, _req: Request, res: Response, _next: NextFunction): void => {
+  if (err instanceof SyntaxError && (err as any).status === 400 && "body" in err) {
+    res.status(400).json({ success: false, message: "Invalid JSON payload." });
     return;
   }
-
-  // This log the complete error stack trace on the server terminal for debugging
-  console.error("⚠️ Global Error Caught: ", err.message || err);
-
-  // This extract the error status code (defaults to 500 Internal Server Error)
-  const statusCode = err.status || 500;
-  const message = err.message || "Internal Server Error";
-
-  // This return a clean, safe JSON format response to the frontend client
+  const statusCode = Number(err.status) || 500;
+  console.error(JSON.stringify({ level: "error", event: "unhandled_request_error", message: err.message || String(err) }));
   res.status(statusCode).json({
     success: false,
-    message,
-    // Only expose raw system stack traces when debugging locally, never in production
-    stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
+    message: statusCode >= 500 ? "Internal Server Error" : (err.message || "Request failed"),
+    ...(env.NODE_ENV === "development" ? { stack: err.stack } : {}),
   });
 };

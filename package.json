@@ -5,10 +5,16 @@
   "main": "server.mjs",
   "scripts": {
     "type": "module",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
     "server": "ts-node-dev --respawn src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "migrate": "node scripts/migrate.mjs",
+    "migrate:down": "node scripts/migrate.mjs down",
+    "check": "npm run build && npm test"
+  },
+  "engines": {
+    "node": ">=22 <25"
   },
   "keywords": [],
   "author": "",
@@ -18,7 +24,9 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
     "google-auth-library": "^10.9.0",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.22.0",
     "uuid": "^14.0.1",
@@ -26,11 +34,15 @@
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.1.0",
     "@types/pg": "^8.20.0",
+    "@types/supertest": "^7.2.1",
+    "supertest": "^7.2.2",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
   }
 }

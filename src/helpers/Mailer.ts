@@ -1,30 +1,27 @@
-export const SendOtp = async (email: string, otp: string) => {
-  const apiKey = process.env.BREVO_API_KEY;
+import { env } from "../config/env";
 
-  if (!apiKey) {
-    console.error(
-      "Critical: BREVO_API_KEY is missing from environment variables",
-    );
-    return;
+export const SendOtp = async (email: string, otp: string): Promise<void> => {
+  if (!env.ZEPTOMAIL_TOKEN || !env.ZEPTOMAIL_FROM_EMAIL) {
+    throw new Error("ZeptoMail is not configured");
   }
 
   try {
-    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    const response = await fetch("https://api.zeptomail.com/v1.1/email", {
       method: "POST",
       headers: {
         accept: "application/json",
-        "api-key": apiKey,
+        Authorization: `zoho-enczapikey ${env.ZEPTOMAIL_TOKEN}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
         subject: " Secure One-Time Password (OTP) Verification",
 
-        sender: {
-          name: "Cedugames",
-          email: "tijesunimiidowu16@gmail.com",
+        from: {
+          name: env.ZEPTOMAIL_FROM_NAME,
+          address: env.ZEPTOMAIL_FROM_EMAIL,
         },
-        to: [{ email: email }],
-        htmlContent: `
+        to: [{ email_address: { address: email, name: email } }],
+        htmlbody: `
           <div style="font-family: sans-serif; max-width: 500px; padding: 20px; background-color: #0a0a0a; color: #f5f5f5; border-radius: 12px; border: 1px solid #262626;">
             <h2 style="color: #800080; margin-bottom: 4px;">Cedugames</h2>
             <p style="font-size: 14px; color: #a3a3a3;">Use the secure verification pin below to complete your authentication lifecycle initialization:</p>
@@ -37,7 +34,7 @@ export const SendOtp = async (email: string, otp: string) => {
       }),
     });
 
-    const result = await response.json();
+    const result = await response.json() as { message?: string; request_id?: string };
 
     if (!response.ok) {
       throw new Error(
@@ -45,12 +42,9 @@ export const SendOtp = async (email: string, otp: string) => {
       );
     }
 
-    console.log(
-      ` Transactional OTP API dispatch success! Message ID: ${result.messageId}`,
-    );
-    return true;
+    console.log(JSON.stringify({ level: "info", event: "otp_email_sent", requestId: result.request_id }));
   } catch (error: any) {
-    console.error(" Critical Transactional API Failure Vector:", error.message);
-    return false;
+    console.error(JSON.stringify({ level: "error", event: "otp_email_failed", message: error.message }));
+    throw error;
   }
 };
