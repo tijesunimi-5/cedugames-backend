@@ -9,6 +9,7 @@ import { env } from "../config/env";
 import { comparePassword, hashPassword } from "../helpers/hashPassword";
 import { SendOtp } from "../helpers/Mailer";
 import { generateOtp, hashOtp } from "../helpers/otp";
+import { logActivity } from "../helpers/activityLog";
 import { verifyAdminToken, verifyPlayerToken, type AuthenticatedRequest } from "../middlewares/authentication_middleware";
 import {
   AdminLoginSchema, ForgotPasswordSchema, GoogleAuthSchema, LoginSchema, RegisterUserSchema,
@@ -39,6 +40,7 @@ router.post("/admin/login", sensitiveLimiter, async (req, res) => {
 
   if (email === normalizeEmail(env.SUPER_ADMIN_EMAIL) && validation.data.password === env.SUPER_ADMIN_PASSWORD) {
     const admin = { id: "super-admin", name: "Super Admin", email, role: "Super Admin", permissions: ["*"], token_version: 0 };
+    await logActivity({ eventType: "admin.signed_in", title: "Admin signed in", description: "Super Admin signed in", actorName: admin.name });
     return res.json({ success: true, message: "Admin sign in successful.", token: signAdminSession({ id: admin.id, role: "super_admin", token_version: 0 }), user: admin });
   }
 
@@ -49,6 +51,7 @@ router.post("/admin/login", sensitiveLimiter, async (req, res) => {
     if (!matches) return res.status(401).json({ success: false, message: "Invalid admin email or password." });
     if (!admin.is_verified) return res.status(403).json({ success: false, message: "Verify this admin account before signing in." });
     const user = { id: admin.id, name: admin.name, email: admin.email, role: "Administrator", permissions: [] };
+    await logActivity({ eventType: "admin.signed_in", title: "Admin signed in", description: `${admin.name} signed in`, actorId: admin.id, actorName: admin.name });
     return res.json({ success: true, message: "Admin sign in successful.", token: signAdminSession(admin), user });
   } catch (error) {
     console.error("Admin login failed", error);
@@ -66,6 +69,28 @@ router.get("/admin/users", verifyAdminToken, async (_req, res) => {
   } catch (error) {
     console.error("Admin user listing failed", error);
     return res.status(500).json({ success: false, message: "Users could not be loaded." });
+  }
+});
+
+router.get("/admin/activities", verifyAdminToken, async (req, res) => {
+  const parsedLimit = Number.parseInt(String(req.query.limit || "20"), 10);
+  const parsedPage = Number.parseInt(String(req.query.page || "1"), 10);
+  const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 100) : 20;
+  const page = Number.isFinite(parsedPage) ? Math.max(parsedPage, 1) : 1;
+  try {
+    const [activities, total] = await Promise.all([
+      pool.query(
+        `SELECT id,event_type,title,description,actor_id,actor_name,metadata,created_at
+         FROM activity_logs ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+        [limit, (page - 1) * limit],
+      ),
+      pool.query("SELECT COUNT(*)::int AS count FROM activity_logs"),
+    ]);
+    const count = total.rows[0]?.count || 0;
+    return res.json({ success: true, activities: activities.rows, pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) } });
+  } catch (error) {
+    console.error("Admin activity listing failed", error);
+    return res.status(500).json({ success: false, message: "Activities could not be loaded." });
   }
 });
 
@@ -94,6 +119,14 @@ router.post("/user/register", sensitiveLimiter, async (req, res) => {
       await SendOtp(email, otp);
     }
     await client.query("COMMIT");
+    await logActivity({
+      eventType: "user.registered",
+      title: "New user registered",
+      description: `${user.rows[0].name} joined the platform`,
+      actorId: user.rows[0].id,
+      actorName: user.rows[0].name,
+      metadata: { username: user.rows[0].username, verificationRequired: env.EMAIL_VERIFICATION_ENABLED },
+    });
     return res.status(201).json({
       success: true,
       requiresVerification: env.EMAIL_VERIFICATION_ENABLED,
@@ -120,6 +153,7 @@ router.post("/login", sensitiveLimiter, async (req, res) => {
     const matches = user?.password ? await comparePassword(validation.data.password, user.password) : false;
     if (!matches) return res.status(401).json({ success: false, message: "Invalid email or password." });
     if (!user.is_verified) return res.status(403).json({ success: false, message: "Verify your email before signing in." });
+    await logActivity({ eventType: "user.signed_in", title: "User signed in", description: `${user.name} signed in`, actorId: user.id, actorName: user.name });
     return res.json({ success: true, message: "Sign in successful.", token: signSession(user), user: { id: user.id, name: user.name, username: user.username, email: user.email, role: user.role } });
   } catch (error) {
     console.error("Login failed", error);
@@ -145,6 +179,7 @@ router.post("/google", sensitiveLimiter, async (req, res, next) => {
       [payload.name || base, username, email],
     );
     const user = result.rows[0];
+    await logActivity({ eventType: "user.google_authenticated", title: "Google authentication", description: `${user.name} authenticated with Google`, actorId: user.id, actorName: user.name });
     return res.json({ success: true, message: "Google authentication successful.", token: signSession(user), user });
   } catch (error) { next(error); }
 });
