@@ -45,7 +45,12 @@ export const SendOtp = async (email: string, otp: string): Promise<void> => {
     const result = await response.json() as {
       message?: string;
       request_id?: string;
-      error?: { code?: string; message?: string; request_id?: string };
+      error?: {
+        code?: string;
+        message?: string;
+        request_id?: string;
+        details?: Array<{ code?: string; message?: string; target?: string }>;
+      };
     };
 
     if (!response.ok) {
@@ -53,6 +58,9 @@ export const SendOtp = async (email: string, otp: string): Promise<void> => {
         [
           `ZeptoMail HTTP ${response.status}`,
           result.error?.code,
+          result.error?.details?.map((detail) =>
+            [detail.code, detail.message, detail.target].filter(Boolean).join(": "),
+          ).join(", "),
           result.error?.message || result.message,
           result.error?.request_id && `request ${result.error.request_id}`,
         ].filter(Boolean).join(" - "),
