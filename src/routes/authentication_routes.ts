@@ -9,7 +9,7 @@ import { env } from "../config/env";
 import { comparePassword, hashPassword } from "../helpers/hashPassword";
 import { SendOtp } from "../helpers/Mailer";
 import { generateOtp, hashOtp } from "../helpers/otp";
-import { verifyPlayerToken, type AuthenticatedRequest } from "../middlewares/authentication_middleware";
+import { verifyAdminToken, verifyPlayerToken, type AuthenticatedRequest } from "../middlewares/authentication_middleware";
 import {
   AdminLoginSchema, ForgotPasswordSchema, GoogleAuthSchema, LoginSchema, RegisterUserSchema,
   ResendOtpSchema, ResetPasswordSchema, UpdatePassword, VerifyOtpSchema,
@@ -53,6 +53,19 @@ router.post("/admin/login", sensitiveLimiter, async (req, res) => {
   } catch (error) {
     console.error("Admin login failed", error);
     return res.status(500).json({ success: false, message: "Admin sign in could not be completed." });
+  }
+});
+
+router.get("/admin/users", verifyAdminToken, async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id,name,username,email,age,total_xp,coins_count,lives_remaining,is_verified,created_at
+       FROM users WHERE role='user' ORDER BY created_at DESC`,
+    );
+    return res.json({ success: true, count: result.rowCount || 0, users: result.rows });
+  } catch (error) {
+    console.error("Admin user listing failed", error);
+    return res.status(500).json({ success: false, message: "Users could not be loaded." });
   }
 });
 
