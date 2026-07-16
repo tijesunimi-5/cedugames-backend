@@ -6,11 +6,18 @@ export const SendOtp = async (email: string, otp: string): Promise<void> => {
   }
 
   try {
+    // Render values are sometimes pasted with the documented authorization
+    // prefix. Keep the environment variable compatible with either format.
+    const sendMailToken = env.ZOHO_MAIL_API_TOKEN
+      .trim()
+      .replace(/^zoho-enczapikey\s+/i, "")
+      .replace(/^['"]|['"]$/g, "");
+
     const response = await fetch(env.ZOHO_MAIL_API_URL, {
       method: "POST",
       headers: {
         accept: "application/json",
-        Authorization: `zoho-enczapikey ${env.ZOHO_MAIL_API_TOKEN}`,
+        Authorization: `zoho-enczapikey ${sendMailToken}`,
         "content-type": "application/json",
       },
       signal: AbortSignal.timeout(env.MAIL_SEND_TIMEOUT_MS),
@@ -35,11 +42,20 @@ export const SendOtp = async (email: string, otp: string): Promise<void> => {
       }),
     });
 
-    const result = await response.json() as { message?: string; request_id?: string };
+    const result = await response.json() as {
+      message?: string;
+      request_id?: string;
+      error?: { code?: string; message?: string; request_id?: string };
+    };
 
     if (!response.ok) {
       throw new Error(
-        result.message || `HTTP error! status: ${response.status}`,
+        [
+          `ZeptoMail HTTP ${response.status}`,
+          result.error?.code,
+          result.error?.message || result.message,
+          result.error?.request_id && `request ${result.error.request_id}`,
+        ].filter(Boolean).join(" - "),
       );
     }
 
