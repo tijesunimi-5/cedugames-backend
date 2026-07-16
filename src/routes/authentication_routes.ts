@@ -11,7 +11,7 @@ import { SendOtp } from "../helpers/Mailer";
 import { generateOtp, hashOtp } from "../helpers/otp";
 import { verifyPlayerToken, type AuthenticatedRequest } from "../middlewares/authentication_middleware";
 import {
-  ForgotPasswordSchema, GoogleAuthSchema, LoginSchema, RegisterUserSchema,
+  AdminLoginSchema, ForgotPasswordSchema, GoogleAuthSchema, LoginSchema, RegisterUserSchema,
   ResendOtpSchema, ResetPasswordSchema, UpdatePassword, VerifyOtpSchema,
 } from "../schemas/authentication_schema";
 
@@ -26,6 +26,35 @@ const signSession = (user: { id: string; role: string; token_version: number }) 
   jwt.sign({ id: user.id, role: user.role, ver: user.token_version }, env.JWT_SECRET, {
     expiresIn: "24h", issuer: "cedugames-api", audience: "cedugames-client",
   });
+
+const signAdminSession = (admin: { id: string; role: string; token_version: number }) =>
+  jwt.sign({ id: admin.id, role: admin.role, ver: admin.token_version }, env.JWT_SECRET, {
+    expiresIn: "12h", issuer: "cedugames-api", audience: "cedugames-admin",
+  });
+
+router.post("/admin/login", sensitiveLimiter, async (req, res) => {
+  const validation = AdminLoginSchema.safeParse(req.body);
+  if (!validation.success) return res.status(400).json({ success: false, errors: validation.error.issues });
+  const email = normalizeEmail(validation.data.email);
+
+  if (email === normalizeEmail(env.SUPER_ADMIN_EMAIL) && validation.data.password === env.SUPER_ADMIN_PASSWORD) {
+    const admin = { id: "super-admin", name: "Super Admin", email, role: "Super Admin", permissions: ["*"], token_version: 0 };
+    return res.json({ success: true, message: "Admin sign in successful.", token: signAdminSession({ id: admin.id, role: "super_admin", token_version: 0 }), user: admin });
+  }
+
+  try {
+    const result = await pool.query("SELECT id,name,email,password,role,is_verified,token_version FROM users WHERE lower(email)=$1 AND role='admin'", [email]);
+    const admin = result.rows[0];
+    const matches = admin?.password ? await comparePassword(validation.data.password, admin.password) : false;
+    if (!matches) return res.status(401).json({ success: false, message: "Invalid admin email or password." });
+    if (!admin.is_verified) return res.status(403).json({ success: false, message: "Verify this admin account before signing in." });
+    const user = { id: admin.id, name: admin.name, email: admin.email, role: "Administrator", permissions: [] };
+    return res.json({ success: true, message: "Admin sign in successful.", token: signAdminSession(admin), user });
+  } catch (error) {
+    console.error("Admin login failed", error);
+    return res.status(500).json({ success: false, message: "Admin sign in could not be completed." });
+  }
+});
 
 router.post("/user/register", sensitiveLimiter, async (req, res) => {
   const validation = RegisterUserSchema.safeParse(req.body);

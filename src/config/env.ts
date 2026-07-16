@@ -13,6 +13,8 @@ const EnvSchema = z.object({
   ZOHO_MAIL_FROM_NAME: z.string().min(1).default("CeduGames"),
   MAIL_SEND_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(10000),
   CORS_ORIGINS: z.string().default("http://localhost:3000,http://localhost:5173"),
+  SUPER_ADMIN_EMAIL: z.string().email().default("cedugames@gmail.com"),
+  SUPER_ADMIN_PASSWORD: z.string().min(10).default("Admin@1234"),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

@@ -16,6 +16,7 @@ const LoginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(10).max(128),
 });
+const AdminLoginSchema = LoginSchema;
 export type LoginInput = z.infer<typeof LoginSchema>;
 
 // Google Authentication Zod Schema
@@ -60,6 +61,7 @@ const UpdatePassword = z.object({
 export {
   RegisterUserSchema,
   LoginSchema,
+  AdminLoginSchema,
   GoogleAuthSchema,
   ForgotPasswordSchema,
   VerifyOtpSchema,
