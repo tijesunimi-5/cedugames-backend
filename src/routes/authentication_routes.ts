@@ -68,18 +68,27 @@ router.post("/user/register", sensitiveLimiter, async (req, res) => {
     await client.query("BEGIN");
     const hashedPassword = await hashPassword(password);
     const user = await client.query(
-      `INSERT INTO users (name, username, email, password, age)
-       VALUES ($1,$2,$3,$4,$5) RETURNING id,name,username,email,role`,
-      [name.trim(), username, email, hashedPassword, age],
+      `INSERT INTO users (name, username, email, password, age, is_verified)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,name,username,email,role,is_verified`,
+      [name.trim(), username, email, hashedPassword, age, !env.EMAIL_VERIFICATION_ENABLED],
     );
-    await client.query(
-      `INSERT INTO otps(email,otp_code,purpose,expires_at) VALUES($1,$2,'register',NOW()+INTERVAL '15 minutes')
-       ON CONFLICT(email,purpose) DO UPDATE SET otp_code=EXCLUDED.otp_code,expires_at=EXCLUDED.expires_at,is_used=false,failed_attempts=0,created_at=NOW()`,
-      [email, hashOtp(email, "register", otp)],
-    );
-    await SendOtp(email, otp);
+    if (env.EMAIL_VERIFICATION_ENABLED) {
+      await client.query(
+        `INSERT INTO otps(email,otp_code,purpose,expires_at) VALUES($1,$2,'register',NOW()+INTERVAL '15 minutes')
+         ON CONFLICT(email,purpose) DO UPDATE SET otp_code=EXCLUDED.otp_code,expires_at=EXCLUDED.expires_at,is_used=false,failed_attempts=0,created_at=NOW()`,
+        [email, hashOtp(email, "register", otp)],
+      );
+      await SendOtp(email, otp);
+    }
     await client.query("COMMIT");
-    return res.status(201).json({ success: true, message: "Registration successful. Please verify your email.", user: user.rows[0] });
+    return res.status(201).json({
+      success: true,
+      requiresVerification: env.EMAIL_VERIFICATION_ENABLED,
+      message: env.EMAIL_VERIFICATION_ENABLED
+        ? "Registration successful. Please verify your email."
+        : "Registration successful. You can now sign in.",
+      user: user.rows[0],
+    });
   } catch (error: any) {
     await client.query("ROLLBACK");
     if (error?.code === "23505") return res.status(409).json({ success: false, message: "Email or username is already registered." });
