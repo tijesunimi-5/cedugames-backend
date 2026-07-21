@@ -3,6 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import crypto from "node:crypto";
+import path from "node:path";
 import routes from "./routes/index";
 import pool from "./config/database_connection";
 import { env } from "./config/env";
@@ -27,6 +28,7 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json({ limit: "100kb" }));
+app.use("/uploads", express.static(path.resolve(process.cwd(), "uploads"), { fallthrough: false, maxAge: "7d" }));
 app.use(rateLimit({ windowMs: 15 * 60_000, limit: 300, standardHeaders: "draft-8", legacyHeaders: false }));
 app.get("/health/live", (_req, res) => res.json({ status: "ok" }));
 app.get("/health/ready", async (_req, res) => {
