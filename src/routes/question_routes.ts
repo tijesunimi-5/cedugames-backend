@@ -66,6 +66,11 @@ router.post("/admin/questions", verifyAdminToken, upload.fields(fields), async (
   } catch (error) { await client.query("ROLLBACK"); cleanup(uploadedFiles); throw error; } finally { client.release(); }
 });
 
+router.get("/admin/questions", verifyAdminToken, async (_req, res) => {
+  const result = await pool.query(`SELECT q.id,q.question_text,q.status,q.created_at,q.age_group_id,q.category_id,q.level_id,c.name category_name,l.name level_name,l.level_number FROM questions q JOIN game_categories c ON c.id=q.category_id JOIN game_levels l ON l.id=q.level_id ORDER BY q.created_at DESC,q.id DESC`);
+  return res.json({ success: true, questions: result.rows.map((row: Record<string, any>) => ({ id: row.id, text: plainText(row.question_text) || "Visual question", status: row.status, createdAt: row.created_at, ageGroupId: row.age_group_id, categoryId: row.category_id, category: row.category_name, levelId: row.level_id, level: row.level_name, levelNumber: row.level_number })) });
+});
+
 router.get("/admin/questions/:id", verifyAdminToken, async (req, res) => {
   const result = await pool.query(`SELECT q.*,COALESCE(json_agg(json_build_object('id',o.id,'text',o.option_text,'mediaUrl',o.media_url,'mediaType',o.media_type,'isCorrect',o.is_correct,'shapeType',o.shape_type,'shapeColor',o.shape_color) ORDER BY o.option_order) FILTER (WHERE o.id IS NOT NULL),'[]') options FROM questions q LEFT JOIN question_options o ON o.question_id=q.id WHERE q.id=$1 GROUP BY q.id`, [req.params.id]);
   const row = result.rows[0];
@@ -106,6 +111,20 @@ router.put("/admin/questions/:id", verifyAdminToken, upload.fields(fields), asyn
     await logActivity({ eventType: "content.question_updated", title: "Question updated", description: "An existing question was updated" });
     return res.json({ success: true, message: "Question updated." });
   } catch (error) { await client.query("ROLLBACK"); cleanup(uploadedFiles); throw error; } finally { client.release(); }
+});
+
+router.delete("/admin/questions/:id", verifyAdminToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const files = await client.query(`SELECT media_url FROM questions WHERE id=$1 UNION ALL SELECT media_url FROM question_options WHERE question_id=$1`, [req.params.id]);
+    const deleted = await client.query("DELETE FROM questions WHERE id=$1 RETURNING id", [req.params.id]);
+    if (!deleted.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({ success: false, message: "Question not found." }); }
+    await client.query("COMMIT");
+    files.rows.forEach((fileRow: { media_url: string | null }) => { const url = fileRow.media_url; if (typeof url === "string" && url.startsWith("/uploads/questions/")) fs.unlink(path.join(uploadRoot, path.basename(url)), () => undefined); });
+    await logActivity({ eventType: "content.question_deleted", title: "Question deleted", description: "A question was deleted" });
+    return res.json({ success: true, message: "Question deleted." });
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 });
 
 router.get("/admin/levels/:levelId/questions", verifyAdminToken, async (req, res) => {
