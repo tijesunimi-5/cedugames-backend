@@ -60,6 +60,13 @@ router.post("/admin/questions", verifyAdminToken, upload.fields(fields), async (
   } catch (error) { await client.query("ROLLBACK"); cleanup(uploadedFiles); throw error; } finally { client.release(); }
 });
 
+router.get("/admin/levels/:levelId/questions", verifyAdminToken, async (req, res) => {
+  const result = await pool.query(`SELECT q.id,q.question_text,q.explanation,q.media_url,q.media_type,q.status,q.created_at,l.name level_name,l.level_number,l.points_per_question,l.time_limit_seconds,COALESCE(json_agg(json_build_object('id',o.id,'text',o.option_text,'mediaUrl',o.media_url,'mediaType',o.media_type,'isCorrect',o.is_correct) ORDER BY o.option_order) FILTER (WHERE o.id IS NOT NULL),'[]') options FROM questions q JOIN game_levels l ON l.id=q.level_id LEFT JOIN question_options o ON o.question_id=q.id WHERE q.level_id=$1 GROUP BY q.id,l.name,l.level_number,l.points_per_question,l.time_limit_seconds ORDER BY q.created_at DESC`, [req.params.levelId]);
+  const level = await pool.query("SELECT id,name,level_number,description,points_per_question,time_limit_seconds FROM game_levels WHERE id=$1", [req.params.levelId]);
+  if (!level.rows[0]) return res.status(404).json({ success: false, message: "Level not found." });
+  return res.json({ success: true, level: level.rows[0], questions: result.rows.map((row: Record<string, unknown>) => ({ id: row.id, text: row.question_text, explanation: row.explanation, mediaUrl: row.media_url, mediaType: row.media_type, status: row.status, createdAt: row.created_at, points: row.points_per_question, timeLimit: row.time_limit_seconds, options: row.options })) });
+});
+
 router.get("/catalog/levels/:levelId/questions", async (req, res) => {
   const result = await pool.query(`SELECT q.id,q.question_text,q.explanation,q.media_url,q.media_type,l.points_per_question,l.time_limit_seconds,COALESCE(json_agg(json_build_object('id',o.id,'text',o.option_text,'mediaUrl',o.media_url,'mediaType',o.media_type,'isCorrect',o.is_correct) ORDER BY o.option_order) FILTER (WHERE o.id IS NOT NULL),'[]') options FROM questions q JOIN game_levels l ON l.id=q.level_id LEFT JOIN question_options o ON o.question_id=q.id WHERE q.level_id=$1 AND q.status='published' GROUP BY q.id,l.points_per_question,l.time_limit_seconds ORDER BY q.created_at`, [req.params.levelId]);
   res.json({ success: true, questions: result.rows.map((row: Record<string, unknown>) => ({ id: row.id, text: row.question_text, explanation: row.explanation, mediaUrl: row.media_url, mediaType: row.media_type, points: row.points_per_question, timeLimit: row.time_limit_seconds, options: row.options })) });
