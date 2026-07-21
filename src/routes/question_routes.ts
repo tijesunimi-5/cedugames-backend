@@ -66,6 +66,48 @@ router.post("/admin/questions", verifyAdminToken, upload.fields(fields), async (
   } catch (error) { await client.query("ROLLBACK"); cleanup(uploadedFiles); throw error; } finally { client.release(); }
 });
 
+router.get("/admin/questions/:id", verifyAdminToken, async (req, res) => {
+  const result = await pool.query(`SELECT q.*,COALESCE(json_agg(json_build_object('id',o.id,'text',o.option_text,'mediaUrl',o.media_url,'mediaType',o.media_type,'isCorrect',o.is_correct,'shapeType',o.shape_type,'shapeColor',o.shape_color) ORDER BY o.option_order) FILTER (WHERE o.id IS NOT NULL),'[]') options FROM questions q LEFT JOIN question_options o ON o.question_id=q.id WHERE q.id=$1 GROUP BY q.id`, [req.params.id]);
+  const row = result.rows[0];
+  if (!row) return res.status(404).json({ success: false, message: "Question not found." });
+  return res.json({ success: true, question: { id: row.id, ageGroupId: row.age_group_id, categoryId: row.category_id, levelId: row.level_id, text: row.question_text, explanation: row.explanation, mediaUrl: row.media_url, mediaType: row.media_type, shapeType: row.shape_type, shapeColor: row.shape_color, status: row.status, options: row.options } });
+});
+
+router.put("/admin/questions/:id", verifyAdminToken, upload.fields(fields), async (req, res) => {
+  const fileMap = (req.files || {}) as Record<string, Express.Multer.File[]>;
+  const uploadedFiles = Object.values(fileMap).flat();
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) { cleanup(uploadedFiles); return res.status(400).json({ success: false, errors: parsed.error.issues }); }
+  const data = parsed.data;
+  const questionText = cleanRichText(data.questionText);
+  const optionTexts = data.options.map((option) => cleanRichText(option.text));
+  const removeMedia = new Set(String(req.body.removeMedia || "").split(",").filter(Boolean));
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const current = await client.query(`SELECT q.media_url,q.media_type,COALESCE(json_agg(json_build_object('order',o.option_order,'mediaUrl',o.media_url,'mediaType',o.media_type) ORDER BY o.option_order) FILTER (WHERE o.id IS NOT NULL),'[]') options FROM questions q LEFT JOIN question_options o ON o.question_id=q.id WHERE q.id=$1 GROUP BY q.id`, [req.params.id]);
+    if (!current.rows[0]) { await client.query("ROLLBACK"); cleanup(uploadedFiles); return res.status(404).json({ success: false, message: "Question not found." }); }
+    const hierarchy = await client.query(`SELECT 1 FROM game_levels l JOIN game_categories c ON c.id=l.category_id WHERE l.id=$1 AND c.id=$2 AND c.age_group_id=$3`, [data.levelId, data.categoryId, data.ageGroupId]);
+    if (!hierarchy.rowCount) { await client.query("ROLLBACK"); cleanup(uploadedFiles); return res.status(400).json({ success: false, message: "The selected age group, category, and level do not match." }); }
+    const questionFile = fileMap.questionMedia?.[0];
+    const questionMediaUrl = questionFile ? mediaUrl(questionFile) : removeMedia.has("question") ? null : current.rows[0].media_url;
+    const questionMediaType = questionFile ? data.questionMediaType : removeMedia.has("question") ? null : current.rows[0].media_type;
+    if (!plainText(questionText) && !questionMediaUrl && !data.shape) { await client.query("ROLLBACK"); cleanup(uploadedFiles); return res.status(400).json({ success: false, message: "Question text, media, or a shape is required." }); }
+    if (data.options.filter((option) => option.isCorrect).length !== 1) { await client.query("ROLLBACK"); cleanup(uploadedFiles); return res.status(400).json({ success: false, message: "Exactly one option must be correct." }); }
+    await client.query(`UPDATE questions SET age_group_id=$1,category_id=$2,level_id=$3,question_text=$4,explanation=$5,media_url=$6,media_type=$7,status=$8,shape_type=$9,shape_color=$10,updated_at=NOW() WHERE id=$11`, [data.ageGroupId,data.categoryId,data.levelId,questionText,data.explanation,questionMediaUrl,questionMediaType,data.status,data.shape?.type||null,data.shape?.color||null,req.params.id]);
+    for (let index = 0; index < 4; index += 1) {
+      const option = data.options[index]!; const file = fileMap[`optionMedia${index}`]?.[0]; const existing = current.rows[0].options[index] || {};
+      const optionMediaUrl = file ? mediaUrl(file) : removeMedia.has(`option${index}`) ? null : existing.mediaUrl;
+      const optionMediaType = file ? option.mediaType : removeMedia.has(`option${index}`) ? null : existing.mediaType;
+      if (!plainText(optionTexts[index] || "") && !optionMediaUrl && !option.shape) { await client.query("ROLLBACK"); cleanup(uploadedFiles); return res.status(400).json({ success: false, message: `Option ${index + 1} needs text, media, or a shape.` }); }
+      await client.query(`UPDATE question_options SET option_text=$1,media_url=$2,media_type=$3,is_correct=$4,shape_type=$5,shape_color=$6 WHERE question_id=$7 AND option_order=$8`, [optionTexts[index],optionMediaUrl,optionMediaType,option.isCorrect,option.shape?.type||null,option.shape?.color||null,req.params.id,index]);
+    }
+    await client.query("COMMIT");
+    await logActivity({ eventType: "content.question_updated", title: "Question updated", description: "An existing question was updated" });
+    return res.json({ success: true, message: "Question updated." });
+  } catch (error) { await client.query("ROLLBACK"); cleanup(uploadedFiles); throw error; } finally { client.release(); }
+});
+
 router.get("/admin/levels/:levelId/questions", verifyAdminToken, async (req, res) => {
   const result = await pool.query(`SELECT q.id,q.question_text,q.explanation,q.media_url,q.media_type,q.shape_type,q.shape_color,q.status,q.created_at,l.name level_name,l.level_number,l.points_per_question,l.time_limit_seconds,COALESCE(json_agg(json_build_object('id',o.id,'text',o.option_text,'mediaUrl',o.media_url,'mediaType',o.media_type,'isCorrect',o.is_correct,'shapeType',o.shape_type,'shapeColor',o.shape_color) ORDER BY o.option_order) FILTER (WHERE o.id IS NOT NULL),'[]') options FROM questions q JOIN game_levels l ON l.id=q.level_id LEFT JOIN question_options o ON o.question_id=q.id WHERE q.level_id=$1 GROUP BY q.id,l.name,l.level_number,l.points_per_question,l.time_limit_seconds ORDER BY q.created_at DESC`, [req.params.levelId]);
   const level = await pool.query("SELECT id,name,level_number,description,points_per_question,time_limit_seconds FROM game_levels WHERE id=$1", [req.params.levelId]);
