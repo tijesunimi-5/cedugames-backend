@@ -16,7 +16,11 @@ const paging=(query:any)=>({ page:Math.max(1,Number(query.page)||1), limit:Math.
 
 router.get("/coins/packages", async (_req,res) => { const r=await pool.query("SELECT id,name,description,coins,price_minor,currency,sort_order FROM coin_packages WHERE is_active=true ORDER BY sort_order,coins"); res.json({success:true,packages:r.rows}); });
 router.get("/coins/me", verifyPlayerToken, async (req:AuthenticatedRequest,res) => { const r=await pool.query("SELECT coins_count FROM users WHERE id=$1",[req.user!.id]); res.json({success:true,balance:Number(r.rows[0]?.coins_count||0)}); });
-router.get("/coins/me/transactions", verifyPlayerToken, async (req:AuthenticatedRequest,res) => { const {page,limit}=paging(req.query); const count=await pool.query("SELECT COUNT(*)::int total FROM coin_transactions WHERE user_id=$1",[req.user!.id]); const r=await pool.query("SELECT id,type,amount,balance_after,description,reference,created_at FROM coin_transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",[req.user!.id,limit,(page-1)*limit]); res.json({success:true,transactions:r.rows,pagination:{page,limit,total:Number(count.rows[0].total)}}); });
+router.get("/coins/me/transactions", verifyPlayerToken, async (req:AuthenticatedRequest,res) => { const {page,limit}=paging(req.query); const count=await pool.query("SELECT COUNT(*)::int total FROM coin_transactions WHERE user_id=$1",[req.user!.id]); const r=await pool.query(`SELECT t.id,t.type,t.amount,t.balance_after,t.description,t.reference,t.created_at,
+  COALESCE(r.name, NULLIF(t.metadata->>'eventKey','')) action_name
+  FROM coin_transactions t
+  LEFT JOIN coin_rules r ON r.id=t.rule_id
+  WHERE t.user_id=$1 ORDER BY t.created_at DESC LIMIT $2 OFFSET $3`,[req.user!.id,limit,(page-1)*limit]); res.json({success:true,transactions:r.rows,pagination:{page,limit,total:Number(count.rows[0].total)}}); });
 
 const admin=Router(); admin.use(verifyAdminToken);
 admin.get("/gameplay-settings",async(_req,res)=>{const r=await pool.query("SELECT passing_score_percent,max_lives,refill_coin_cost,updated_at FROM gameplay_settings WHERE id=1");res.json({success:true,settings:r.rows[0]});});
