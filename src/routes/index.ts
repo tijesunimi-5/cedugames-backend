@@ -5,6 +5,7 @@ import publicCatalogRoutes from "./public_catalog_routes";
 import questionRoutes from "./question_routes";
 import coinRoutes from "./coin_routes";
 import gameplayRoutes from "./gameplay_routes";
+import leaderboardRoutes from "./leaderboard_routes";
 import {Router} from 'express';
 
 const router = Router();
@@ -15,5 +16,6 @@ router.use("/catalog", publicCatalogRoutes);
 router.use(questionRoutes);
 router.use(coinRoutes);
 router.use(gameplayRoutes);
+router.use(leaderboardRoutes);
 
 export default router;
