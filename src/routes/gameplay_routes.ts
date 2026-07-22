@@ -8,10 +8,15 @@ import { recordCoinTransaction } from "../services/coin_service";
 const router=Router();
 const attemptSchema=z.object({attemptId:z.string().uuid(),levelId:z.string().uuid(),answers:z.array(z.object({questionId:z.string().uuid(),optionId:z.string().uuid()})).max(500)});
 const actionSchema=z.object({actionId:z.string().uuid(),eventKey:z.enum(["question_skipped","wrong_option_removed","answer_revealed"]),levelId:z.string().uuid(),questionId:z.string().uuid()});
+const answerCheckSchema=z.object({levelId:z.string().uuid(),questionId:z.string().uuid(),optionId:z.string().uuid()});
 router.use(["/gameplay/refill","/gameplay/attempts"],verifyPlayerToken);
 router.use(["/gameplay/actions"],verifyPlayerToken);
 
 router.get("/gameplay/status",verifyPlayerToken,async(req:AuthenticatedRequest,res)=>{const r=await pool.query(`SELECT u.coins_count,u.lives_remaining,s.max_lives,s.passing_score_percent,s.refill_coin_cost FROM users u CROSS JOIN gameplay_settings s WHERE u.id=$1 AND s.id=1`,[req.user!.id]);if(!r.rows[0])return res.status(404).json({success:false,message:"Player not found."});res.json({success:true,...r.rows[0]});});
+
+router.get("/gameplay/categories/:categoryId/levels",verifyPlayerToken,async(req:AuthenticatedRequest,res)=>{if(!z.string().uuid().safeParse(req.params.categoryId).success)return res.status(400).json({success:false,message:"Invalid category."});const r=await pool.query(`SELECT l.id,l.name,l.level_number,l.description,l.image_url,l.points_per_question,l.time_limit_seconds,COALESCE(MAX(a.score_percent),0)::int best_score,COALESCE(BOOL_OR(a.passed),false) completed FROM game_levels l LEFT JOIN gameplay_attempts a ON a.level_id=l.id AND a.user_id=$1 WHERE l.category_id=$2 GROUP BY l.id ORDER BY l.level_number`,[req.user!.id,req.params.categoryId]);const rows=r.rows as Array<Record<string,any>>;const levels=rows.map((level:Record<string,any>,index:number,all:Array<Record<string,any>>)=>({...level,unlocked:index===0||Boolean(all[index-1]?.completed)}));res.json({success:true,levels});});
+
+router.post("/gameplay/check-answer",verifyPlayerToken,async(req,res)=>{const parsed=answerCheckSchema.safeParse(req.body);if(!parsed.success)return res.status(400).json({success:false,errors:parsed.error.issues});const d=parsed.data;const r=await pool.query(`SELECT o.is_correct,q.explanation FROM questions q JOIN question_options o ON o.question_id=q.id WHERE q.id=$1 AND q.level_id=$2 AND q.status='published' AND o.id=$3`,[d.questionId,d.levelId,d.optionId]);if(!r.rows[0])return res.status(404).json({success:false,message:"That answer option is not available for this question."});res.json({success:true,isCorrect:Boolean(r.rows[0].is_correct),explanation:r.rows[0].explanation||""});});
 
 router.get("/gameplay/actions",async(_req,res)=>{const keys=["question_skipped","wrong_option_removed","answer_revealed"];const r=await pool.query("SELECT name,event_key,amount,description,is_active FROM coin_rules WHERE type='deduction' AND event_key=ANY($1) ORDER BY name",[keys]);res.json({success:true,actions:r.rows});});
 
