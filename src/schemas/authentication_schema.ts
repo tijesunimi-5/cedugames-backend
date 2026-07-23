@@ -57,6 +57,11 @@ const UpdatePassword = z.object({
   currentPassword: z.string(),
   newPassword: z.string().min(10).max(128),
 });
+const UpdateProfileSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  username: z.string().trim().toLowerCase().regex(/^[a-z0-9._-]{3,40}$/, "Username must be 3-40 characters using letters, numbers, dots, underscores, or hyphens."),
+  age: z.number().int().min(1).max(130),
+});
 
 export {
   RegisterUserSchema,
@@ -68,4 +73,5 @@ export {
   ResendOtpSchema,
   ResetPasswordSchema,
   UpdatePassword
+  ,UpdateProfileSchema
 };

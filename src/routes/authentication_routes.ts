@@ -14,6 +14,7 @@ import { verifyAdminToken, verifyPlayerToken, type AuthenticatedRequest } from "
 import {
   AdminLoginSchema, ForgotPasswordSchema, GoogleAuthSchema, LoginSchema, RegisterUserSchema,
   ResendOtpSchema, ResetPasswordSchema, UpdatePassword, VerifyOtpSchema,
+  UpdateProfileSchema,
 } from "../schemas/authentication_schema";
 
 const router = Router();
@@ -170,6 +171,50 @@ router.get("/admin/activities", verifyAdminToken, async (req, res) => {
   } catch (error) {
     console.error("Admin activity listing failed", error);
     return res.status(500).json({ success: false, message: "Activities could not be loaded." });
+  }
+});
+
+router.get("/user/profile", verifyPlayerToken, async (req: AuthenticatedRequest, res) => {
+  try {
+    const [userResult, performance, badges, attempts] = await Promise.all([
+      pool.query(`SELECT id,name,username,email,age,total_xp,coins_count,lives_remaining,is_verified,is_oauth,created_at,updated_at FROM users WHERE id=$1 AND role='user'`,[req.user!.id]),
+      pool.query(`SELECT COUNT(a.id)::int attempts,COUNT(a.id) FILTER(WHERE a.passed)::int passed_attempts,
+        COUNT(DISTINCT a.level_id) FILTER(WHERE a.passed)::int completed_levels,
+        COALESCE(ROUND(AVG(a.score_percent)),0)::int average_score,COALESCE(MAX(a.score_percent),0)::int best_score,
+        COALESCE(SUM(a.correct_answers),0)::int correct_answers,COALESCE(SUM(a.total_questions),0)::int questions_answered,
+        MAX(a.created_at) last_played FROM gameplay_attempts a WHERE a.user_id=$1`,[req.user!.id]),
+      pool.query(`SELECT b.id,b.name,b.description,b.tier,b.criteria_type,b.criteria_value,b.sort_order,
+        ub.earned_at,(ub.user_id IS NOT NULL) earned FROM badges b
+        LEFT JOIN user_badges ub ON ub.badge_id=b.id AND ub.user_id=$1
+        WHERE b.is_active=true ORDER BY b.sort_order,b.name`,[req.user!.id]),
+      pool.query(`SELECT a.id,a.score_percent,a.correct_answers,a.total_questions,a.passed,a.xp_awarded,a.created_at,
+        l.name level_name,l.level_number,c.name category_name,g.name age_group_name
+        FROM gameplay_attempts a JOIN game_levels l ON l.id=a.level_id
+        JOIN game_categories c ON c.id=l.category_id JOIN age_groups g ON g.id=c.age_group_id
+        WHERE a.user_id=$1 ORDER BY a.created_at DESC LIMIT 6`,[req.user!.id]),
+    ]);
+    if(!userResult.rows[0])return res.status(404).json({success:false,message:"Profile not found."});
+    return res.json({success:true,user:{...userResult.rows[0],performance:performance.rows[0]},badges:badges.rows,recentAttempts:attempts.rows});
+  } catch(error) {
+    console.error("Player profile failed",{userId:req.user!.id,error});
+    return res.status(500).json({success:false,message:"Your profile could not be loaded."});
+  }
+});
+
+router.patch("/user/profile", verifyPlayerToken, async (req: AuthenticatedRequest, res) => {
+  const validation=UpdateProfileSchema.safeParse(req.body);
+  if(!validation.success)return res.status(400).json({success:false,errors:validation.error.issues});
+  const d=validation.data;
+  try {
+    const result=await pool.query(`UPDATE users SET name=$1,username=$2,age=$3,updated_at=NOW()
+      WHERE id=$4 AND role='user' RETURNING id,name,username,email,age,total_xp,coins_count,lives_remaining,is_verified,is_oauth,created_at,updated_at`,
+      [d.name,d.username,d.age,req.user!.id]);
+    await logActivity({eventType:"user.profile_updated",title:"Profile updated",description:`${d.name} updated their player profile`,actorId:req.user!.id,actorName:d.name});
+    return res.json({success:true,message:"Profile updated successfully.",user:result.rows[0]});
+  } catch(error:any) {
+    if(error.code==="23505")return res.status(409).json({success:false,message:"That username is already in use."});
+    console.error("Player profile update failed",{userId:req.user!.id,error});
+    return res.status(500).json({success:false,message:"Your profile could not be updated."});
   }
 });
 
