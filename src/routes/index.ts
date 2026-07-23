@@ -8,6 +8,7 @@ import gameplayRoutes from "./gameplay_routes";
 import leaderboardRoutes from "./leaderboard_routes";
 import dashboardRoutes from "./dashboard_routes";
 import badgeRoutes from "./badge_routes";
+import notificationRoutes from "./notification_routes";
 import {Router} from 'express';
 
 const router = Router();
@@ -21,5 +22,6 @@ router.use(gameplayRoutes);
 router.use(leaderboardRoutes);
 router.use(dashboardRoutes);
 router.use(badgeRoutes);
+router.use(notificationRoutes);
 
 export default router;
