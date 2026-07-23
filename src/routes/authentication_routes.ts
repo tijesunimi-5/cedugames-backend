@@ -87,7 +87,7 @@ router.get("/admin/users/:id", verifyAdminToken, async (req, res) => {
     const user = userResult.rows[0];
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
 
-    const [performance, attempts, coinTransactions, purchases] = await Promise.all([
+    const [performance, attempts, coinTransactions, purchases, earnedBadges] = await Promise.all([
       pool.query(
         `SELECT COUNT(a.id)::int attempts,
          COUNT(a.id) FILTER (WHERE a.passed)::int passed_attempts,
@@ -127,6 +127,12 @@ router.get("/admin/users/:id", verifyAdminToken, async (req, res) => {
          FROM coin_purchase_intents WHERE user_id=$1`,
         [user.id],
       ),
+      pool.query(
+        `SELECT b.id,b.name,b.description,b.tier,b.criteria_type,b.criteria_value,ub.earned_at
+         FROM user_badges ub JOIN badges b ON b.id=ub.badge_id
+         WHERE ub.user_id=$1 ORDER BY ub.earned_at DESC`,
+        [user.id],
+      ),
     ]);
     return res.json({
       success: true,
@@ -137,6 +143,7 @@ router.get("/admin/users/:id", verifyAdminToken, async (req, res) => {
       },
       recentAttempts: attempts.rows,
       recentCoinTransactions: coinTransactions.rows,
+      earnedBadges: earnedBadges.rows,
     });
   } catch (error) {
     console.error("Admin user profile failed", { userId, error });
