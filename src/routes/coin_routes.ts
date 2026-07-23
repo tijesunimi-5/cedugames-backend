@@ -4,6 +4,7 @@ import pool from "../config/database_connection";
 import { verifyAdminToken, verifyPlayerToken, type AuthenticatedRequest } from "../middlewares/authentication_middleware";
 import { logActivity } from "../helpers/activityLog";
 import { recordCoinTransaction } from "../services/coin_service";
+import { completeCoinPurchase, createCoinCheckout, validFlutterwaveSignature } from "../services/flutterwave_service";
 
 const router = Router();
 const uuid = z.string().uuid();
@@ -13,6 +14,8 @@ const adjustmentSchema = z.object({ userId:uuid, type:z.enum(["reward","deductio
 const gameplaySettingsSchema = z.object({ passingScorePercent:z.number().int().min(0).max(100), maxLives:z.number().int().min(1).max(10), refillCoinCost:z.number().int().positive().max(1000000) });
 const invalid=(res:any,error:any)=>res.status(400).json({success:false,errors:error.issues});
 const paging=(query:any)=>({ page:Math.max(1,Number(query.page)||1), limit:Math.min(100,Math.max(1,Number(query.limit)||20)) });
+const purchaseSchema = z.object({ packageId: uuid });
+const verifyPurchaseSchema = z.object({ transactionId: z.coerce.number().int().positive(), txRef: z.string().trim().min(1).max(160) });
 
 router.get("/coins/packages", async (_req,res) => { const r=await pool.query("SELECT id,name,description,coins,price_minor,currency,sort_order FROM coin_packages WHERE is_active=true ORDER BY sort_order,coins"); res.json({success:true,packages:r.rows}); });
 router.get("/coins/me", verifyPlayerToken, async (req:AuthenticatedRequest,res) => { const r=await pool.query("SELECT coins_count FROM users WHERE id=$1",[req.user!.id]); res.json({success:true,balance:Number(r.rows[0]?.coins_count||0)}); });
@@ -21,6 +24,26 @@ router.get("/coins/me/transactions", verifyPlayerToken, async (req:Authenticated
   FROM coin_transactions t
   LEFT JOIN coin_rules r ON r.id=t.rule_id
   WHERE t.user_id=$1 ORDER BY t.created_at DESC LIMIT $2 OFFSET $3`,[req.user!.id,limit,(page-1)*limit]); res.json({success:true,transactions:r.rows,pagination:{page,limit,total:Number(count.rows[0].total)}}); });
+
+router.post("/coins/purchases", verifyPlayerToken, async (req:AuthenticatedRequest,res) => {
+  const parsed=purchaseSchema.safeParse(req.body);if(!parsed.success)return invalid(res,parsed.error);
+  try{const checkout=await createCoinCheckout(req.user!.id,parsed.data.packageId);res.status(201).json({success:true,...checkout});}
+  catch(e:any){res.status(e.status||500).json({success:false,message:e.message||"Payment could not be started."});}
+});
+router.post("/coins/purchases/verify", verifyPlayerToken, async (req:AuthenticatedRequest,res) => {
+  const parsed=verifyPurchaseSchema.safeParse(req.body);if(!parsed.success)return invalid(res,parsed.error);
+  try{const result=await completeCoinPurchase(parsed.data.transactionId,parsed.data.txRef,req.user!.id);res.json({success:true,...result});}
+  catch(e:any){res.status(e.status||500).json({success:false,message:e.message||"Payment could not be verified."});}
+});
+router.post("/coins/flutterwave/webhook", async (req:any,res) => {
+  const signature=req.header("flutterwave-signature");
+  if(!validFlutterwaveSignature(req.rawBody,signature))return res.status(401).json({success:false});
+  res.sendStatus(200);
+  const transactionId=Number(req.body?.data?.id);
+  if((req.body?.type==="charge.completed"||req.body?.event==="charge.completed")&&Number.isSafeInteger(transactionId)){
+    completeCoinPurchase(transactionId).catch((error)=>console.error("Flutterwave webhook processing failed",{transactionId,message:error?.message}));
+  }
+});
 
 const admin=Router(); admin.use(verifyAdminToken);
 admin.get("/gameplay-settings",async(_req,res)=>{const r=await pool.query("SELECT passing_score_percent,max_lives,refill_coin_cost,updated_at FROM gameplay_settings WHERE id=1");res.json({success:true,settings:r.rows[0]});});

@@ -16,6 +16,9 @@ const EnvSchema = z.object({
   CORS_ORIGINS: z.string().default("http://localhost:3000,http://localhost:5173"),
   SUPER_ADMIN_EMAIL: z.string().email().default("cedugames@gmail.com"),
   SUPER_ADMIN_PASSWORD: z.string().min(10).default("Admin@1234"),
+  FLW_SECRET_KEY: z.string().default(""),
+  FLW_SECRET_HASH: z.string().default(""),
+  FLW_REDIRECT_URL: z.string().url().default("http://localhost:5173/shop"),
 });
 
 const parsed = EnvSchema.safeParse(process.env);
@@ -27,6 +30,8 @@ if (parsed.data.NODE_ENV === "production") {
   const missing = [
     !parsed.data.ZOHO_MAIL_API_TOKEN && "ZOHO_MAIL_API_TOKEN",
     !parsed.data.ZOHO_MAIL_FROM && "ZOHO_MAIL_FROM",
+    !parsed.data.FLW_SECRET_KEY && "FLW_SECRET_KEY",
+    !parsed.data.FLW_SECRET_HASH && "FLW_SECRET_HASH",
   ].filter(Boolean);
   if (missing.length) throw new Error(`Missing production configuration: ${missing.join(", ")}`);
 }

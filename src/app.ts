@@ -27,7 +27,12 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json({ limit: "100kb" }));
+app.use(express.json({
+  limit: "100kb",
+  verify: (req, _res, buffer) => {
+    (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+  },
+}));
 app.use("/uploads", express.static(path.resolve(process.cwd(), "uploads"), { fallthrough: false, maxAge: "7d" }));
 app.use(rateLimit({ windowMs: 15 * 60_000, limit: 300, standardHeaders: "draft-8", legacyHeaders: false }));
 app.get("/health/live", (_req, res) => res.json({ status: "ok" }));
