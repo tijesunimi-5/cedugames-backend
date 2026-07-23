@@ -72,6 +72,78 @@ router.get("/admin/users", verifyAdminToken, async (_req, res) => {
   }
 });
 
+router.get("/admin/users/:id", verifyAdminToken, async (req, res) => {
+  const userId = String(req.params.id || "");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId)) {
+    return res.status(400).json({ success: false, message: "Invalid user ID." });
+  }
+  try {
+    const userResult = await pool.query(
+      `SELECT id,name,username,email,age,role,total_xp,coins_count,lives_remaining,
+       is_verified,is_oauth,created_at,updated_at
+       FROM users WHERE id=$1 AND role='user'`,
+      [userId],
+    );
+    const user = userResult.rows[0];
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+
+    const [performance, attempts, coinTransactions, purchases] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(a.id)::int attempts,
+         COUNT(a.id) FILTER (WHERE a.passed)::int passed_attempts,
+         COUNT(DISTINCT a.level_id) FILTER (WHERE a.passed)::int completed_levels,
+         COALESCE(ROUND(AVG(a.score_percent)),0)::int average_score,
+         COALESCE(MAX(a.score_percent),0)::int best_score,
+         COALESCE(SUM(a.correct_answers),0)::int correct_answers,
+         COALESCE(SUM(a.total_questions),0)::int questions_answered,
+         COALESCE(SUM(a.xp_awarded),0)::int gameplay_xp,
+         MAX(a.created_at) last_played
+         FROM gameplay_attempts a WHERE a.user_id=$1`,
+        [user.id],
+      ),
+      pool.query(
+        `SELECT a.id,a.score_percent,a.correct_answers,a.total_questions,a.passed,a.life_lost,
+         a.lives_after,a.xp_awarded,a.created_at,l.name level_name,l.level_number,
+         c.name category_name,g.name age_group_name
+         FROM gameplay_attempts a
+         JOIN game_levels l ON l.id=a.level_id
+         JOIN game_categories c ON c.id=l.category_id
+         JOIN age_groups g ON g.id=c.age_group_id
+         WHERE a.user_id=$1 ORDER BY a.created_at DESC LIMIT 10`,
+        [user.id],
+      ),
+      pool.query(
+        `SELECT t.id,t.type,t.amount,t.balance_after,t.description,t.reference,t.created_at,
+         p.name package_name FROM coin_transactions t
+         LEFT JOIN coin_packages p ON p.id=t.package_id
+         WHERE t.user_id=$1 ORDER BY t.created_at DESC LIMIT 10`,
+        [user.id],
+      ),
+      pool.query(
+        `SELECT COUNT(*) FILTER (WHERE status='completed')::int completed_purchases,
+         COUNT(*) FILTER (WHERE status='pending')::int pending_purchases,
+         COALESCE(SUM(amount_minor) FILTER (WHERE status='completed' AND currency='NGN'),0)::bigint spent_minor,
+         COALESCE(SUM(coins) FILTER (WHERE status='completed'),0)::bigint purchased_coins
+         FROM coin_purchase_intents WHERE user_id=$1`,
+        [user.id],
+      ),
+    ]);
+    return res.json({
+      success: true,
+      user: {
+        ...user,
+        performance: performance.rows[0],
+        purchases: purchases.rows[0],
+      },
+      recentAttempts: attempts.rows,
+      recentCoinTransactions: coinTransactions.rows,
+    });
+  } catch (error) {
+    console.error("Admin user profile failed", { userId, error });
+    return res.status(500).json({ success: false, message: "User profile could not be loaded." });
+  }
+});
+
 router.get("/admin/activities", verifyAdminToken, async (req, res) => {
   const parsedLimit = Number.parseInt(String(req.query.limit || "20"), 10);
   const parsedPage = Number.parseInt(String(req.query.page || "1"), 10);
